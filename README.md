@@ -119,3 +119,4 @@ It’s essentially `yt-dlp`, but with a friendly, interactive wrapper that feels
 * Contributions welcome!
 * Open a PR or submit issues for bugs/features.
 * Keep the progress bar clean, colors readable, and UX smooth.
+
