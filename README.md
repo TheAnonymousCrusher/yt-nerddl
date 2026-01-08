@@ -63,7 +63,8 @@ Make sure you have these installed:
 
 - Python 3.11+  
 - `yt-dlp` (`pip install yt-dlp`)  
-- `ffmpeg` (for audio extraction/conversion)  
+- `ffmpeg` (for audio extraction/conversion)
+- [NerdFont](https://www.nerdfonts.com) (for glyphs to appear correctly)  
 - Linux terminal (with ANSI color support)  
 
 ## From GitHub
