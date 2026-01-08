@@ -1,17 +1,43 @@
-name: Lint Python
-on: [push, pull_request]
+name: Python Lint & Autoformat
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - "**"
+
 jobs:
   lint:
+    name: Lint & Autoformat
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
+      # Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
+
+      # Install dependencies
       - name: Install dependencies
-        run: pip install yt-dlp black flake8
-      - name: Run linters
         run: |
-          black --check .
+          python -m pip install --upgrade pip
+          pip install black flake8 yt-dlp
+
+      # Autoformat with Black
+      - name: Autoformat with Black
+        run: |
+          echo "💅 Running Black autoformatter..."
+          black .
+
+      # Check style with Flake8
+      - name: Lint with Flake8
+        run: |
+          echo "🔍 Running Flake8..."
           flake8 .
