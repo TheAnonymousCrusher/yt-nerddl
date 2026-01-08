@@ -90,7 +90,7 @@ yt-nerddl [options] <youtube-url>
 
 ## Windows
 
->‼️ Interactive quality selector (-q) is currently supported on Windows
+>‼️ Interactive quality selector (-q) is currently not supported on Windows
 
 - Make sure you have Python 3.11+ and FFmpeg installed.
 - Clone/download the repo:
