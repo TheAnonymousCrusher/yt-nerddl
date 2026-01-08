@@ -70,13 +70,13 @@ Make sure you have these installed:
 > Applies to any non-Arch based distros & MacOS
 
 ```bash
-git clone https://github.com/TheAnonymousCrusher/yt-nerddl-aur.git
-cd yt-nerddl-aur
+git clone https://github.com/TheAnonymousCrusher/yt-nerddl.git
+cd yt-nerddl
 chmod +x yt-nerddl.py
 sudo mv yt-nerddl.py /usr/local/bin/yt-nerddl
 ````
 
-## From AUR
+## From AUR (older version, not maintained)
 
 ```bash
 yay -S yt-nerddl # or whatever AUR helper you use (e.g paru, pikaur)
@@ -91,10 +91,10 @@ yt-nerddl [options] <youtube-url>
 ## Windows
 
 - Make sure you have Python 3.11+ and FFmpeg installed.
-- Clone the repo:
+- Clone/download the repo:
 ``` bash
-git clone https://github.com/TheAnonymousCrusher/yt-nerddl-aur.git
-cd yt-nerddl-aur
+git clone https://github.com/TheAnonymousCrusher/yt-nerddl.git
+cd yt-nerddl
 # Install dependencies
 pip install -r requirements.txt
 ```
