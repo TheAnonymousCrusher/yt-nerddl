@@ -71,8 +71,8 @@ Make sure you have these installed:
 > Applies to any non-Arch based distros
 
 ```bash
-git clone https://github.com/TheAnonymousCrusher/yt-nerddl.git
-cd yt-nerddl
+git clone https://github.com/TheAnonymousCrusher/yt-nerddl-aur.git
+cd yt-nerddl-aur
 chmod +x yt-nerddl.py
 sudo mv yt-nerddl.py /usr/local/bin/yt-nerddl
 ````
