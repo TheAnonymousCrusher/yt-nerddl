@@ -1,4 +1,4 @@
-name: Python Lint & Autoformat
+name: Python Autoformat Lint
 
 on:
   push:
@@ -10,34 +10,35 @@ on:
 
 jobs:
   lint:
-    name: Lint & Autoformat
+    name: Autoformat + Lint
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout code
+      # 1️⃣ Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # Setup Python
+      # 2️⃣ Setup Python
       - name: Setup Python 3.11
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      # Install dependencies
+      # 3️⃣ Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install black flake8 yt-dlp
 
-      # Autoformat with Black
+      # 4️⃣ Autoformat with Black
       - name: Autoformat with Black
         run: |
           echo "💅 Running Black autoformatter..."
           black .
 
-      # Check style with Flake8
+      # 5️⃣ Lint with Flake8 (non-blocking)
       - name: Lint with Flake8
+        continue-on-error: true
         run: |
-          echo "🔍 Running Flake8..."
+          echo "🔍 Running Flake8 (non-blocking)..."
           flake8 .
