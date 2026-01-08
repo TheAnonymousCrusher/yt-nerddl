@@ -1,8 +1,17 @@
-# yt-nerddl
+<br>
+<div align="center">
+  <img src="assets/wide_logo.png" width="80%" >
 
-A sleek, hassle-free YouTube downloader built as a **wrapper around `yt-dlp`**, with a clean, interactive inline selector and a Deno-inspired loading bar. Designed for anyone who wants a straightforward way to download audio/video from YouTube without fussing with complex commands.
+  A sleek, hassle-free YouTube downloader built as a <b>wrapper around `yt-dlp`</b>, with a clean, interactive inline selector and a Deno-inspired loading bar. Designed for anyone who wants a straightforward way to download audio/video from YouTube without fussing with complex commands.
+</div>
+<br>
 
 > Note: only works for YouTube and YouTube Music (for now at least)
+
+<div align="center">
+  <img src="screenshot1.png" width="30%" >
+  <img src="screenshot2.png" width="30%" >
+</div>
 
 ---
 
