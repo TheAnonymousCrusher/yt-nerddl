@@ -1,21 +1,22 @@
 <br>
 <div align="center">
-  <img src="banner.png" width="80%" >
+  <img src="banner.png" width="40%" >
 
   A sleek, hassle-free YouTube downloader built as a <b>wrapper around `yt-dlp`</b>, with a clean, interactive inline selector and a Deno-inspired loading bar. Designed for anyone who wants a straightforward way to download audio/video from YouTube without fussing with complex commands.
 </div>
 <br>
 
-> Note: only works for YouTube and YouTube Music (for now at least)
-
 <div align="center">
   <img src="screenshot1.png" width="49%" >
   <img src="screenshot2.png" width="49%" >
 </div>
+<br>
+
+> Note: only works for YouTube and YouTube Music (for now at least)
 
 ---
 
-## Features
+# Usage
 
 - ✅ **Audio & Video downloads**  
   - `-a / --audio` → download audio only (mp3)  
@@ -29,6 +30,10 @@
 
 - ✅ **Custom output folder**  
   - `-o / --output <directory>` → choose where to save downloads (default: `~/Videos/Youtube`)  
+
+---
+
+# Features
 
 - ✅ **Playlist support**  
   - Prompts if the URL contains a playlist and allows downloading all videos  
@@ -50,7 +55,7 @@
 
 ---
 
-## Installation
+# Installation
 
 ### Dependencies
 
@@ -61,19 +66,20 @@ Make sure you have these installed:
 - `ffmpeg` (for audio extraction/conversion)  
 - Linux terminal (with ANSI color support)  
 
-### From GitHub
+## From GitHub
+> Applies to any non-Arch based distros
 
 ```bash
-git clone https://github.com/<your-username>/yt-nerddl.git
+git clone https://github.com/TheAnonymousCrusher/yt-nerddl.git
 cd yt-nerddl
 chmod +x yt-nerddl.py
 sudo mv yt-nerddl.py /usr/local/bin/yt-nerddl
 ````
 
-### From AUR (when available)
+## From AUR
 
 ```bash
-yay -S yt-nerddl
+yay -S yt-nerddl # or whatever AUR helper you use (e.g paru, pikaur)
 ```
 
 > After installation, you can run it simply with:
@@ -84,10 +90,10 @@ yt-nerddl [options] <youtube-url>
 
 ---
 
-## Usage
+# Basic Usage Guide
 
 ```bash
-yt-nerddl <url> [options]
+yt-nerddl [options] <url>
 ```
 
 **Options:**
@@ -115,7 +121,7 @@ yt-nerddl -H https://www.youtube.com/playlist?list=xxxx
 
 ---
 
-## Philosophy
+# Philosophy
 
 `yt-nerddl` is meant to be **a nice-looking, hassle-free YouTube downloader**. The idea is to make downloading content intuitive, quick, and visually clear without writing complex `yt-dlp` commands. The **progress bar** and inline selector are inspired by Deno’s clean aesthetic.
 
@@ -123,7 +129,7 @@ It’s essentially `yt-dlp`, but with a friendly, interactive wrapper that feels
 
 ---
 
-## Contribution
+# Contributions
 
 * Contributions welcome!
 * Open a PR or submit issues for bugs/features.
