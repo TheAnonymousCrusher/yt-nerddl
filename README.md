@@ -64,11 +64,10 @@ Make sure you have these installed:
 - Python 3.11+  
 - `yt-dlp` (`pip install yt-dlp`)  
 - `ffmpeg` (for audio extraction/conversion)
-- [NerdFont](https://www.nerdfonts.com) (for glyphs to appear correctly)  
-- Linux terminal (with ANSI color support)  
+- A [NerdFont](https://www.nerdfonts.com) (for glyphs to appear correctly)  
 
-## From GitHub
-> Applies to any non-Arch based distros
+## From GitHub (Recommended)
+> Applies to any non-Arch based distros & MacOS
 
 ```bash
 git clone https://github.com/TheAnonymousCrusher/yt-nerddl-aur.git
@@ -88,6 +87,25 @@ yay -S yt-nerddl # or whatever AUR helper you use (e.g paru, pikaur)
 ```bash
 yt-nerddl [options] <youtube-url> 
 ```
+
+## Windows
+
+- Make sure you have Python 3.11+ and FFmpeg installed.
+- Clone the repo:
+``` bash
+git clone https://github.com/TheAnonymousCrusher/yt-nerddl-aur.git
+cd yt-nerddl-aur
+# Install dependencies
+pip install -r requirements.txt
+```
+
+- Run the script when you need to use it:
+
+```bash
+python yt-nerddl.py [options] <url>
+```
+
+> Note: For the icons to look right, make sure your Windows Terminal is set to use a Nerd Font.
 
 ---
 
