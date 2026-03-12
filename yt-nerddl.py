@@ -7,9 +7,11 @@ import time
 import socket
 import argparse
 import urllib.parse
-import termios
-import tty
 from datetime import timedelta
+
+# Enable ANSI escape sequences on Windows
+if os.name == 'nt':
+    os.system('color')
 
 # -------------------------
 # tiny preamble
@@ -54,20 +56,125 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument("url", nargs="?", help="YouTube URL")
 parser.add_argument("-a", "--audio", action="store_true", help="Audio only (mp3)")
+
+cookies_help = (
+    "Use browser cookies for 18+ content\n"
+    "(e.g., firefox, chrome, brave, edge, opera, safari)\n"
+    "Guide: https://github.com/TheAnonymousCrusher/yt-nerddl/blob/main/mature_content.md"
+)
+parser.add_argument("-c", "--cookies", metavar="BROWSER", help=cookies_help)
+
 parser.add_argument("-H", "--high", action="store_true", help="Fetch highest available quality")
 parser.add_argument("-o", "--output", help="Output directory (default: ~/Videos/Youtube)")
 parser.add_argument("-q", "--quality", action="store_true", help="Interactive quality selector")
 parser.add_argument("-v", "--version", action="store_true", help="Show version and exit")
 args = parser.parse_args()
 
-VERSION = "4.2.3"
+VERSION = "4.4.0"
 if args.version:
     print(f"yt-nerddl version {VERSION}")
     sys.exit(0)
 
+# -------------------------
+# Cross-Platform Raw Key Reader
+# -------------------------
+def read_key():
+    if os.name == 'nt':
+        import msvcrt
+        ch = msvcrt.getch()
+        if ch in (b'\x03', b'\x04'):  # Ctrl+C or Ctrl+D
+            raise KeyboardInterrupt
+        if ch in (b'\xe0', b'\x00'):  # Arrow keys prefix
+            ch2 = msvcrt.getch()
+            if ch2 == b'H': return 'up'
+            if ch2 == b'P': return 'down'
+            return None
+        if ch in (b'\r', b'\n'): return 'enter'
+        return ch.decode('utf-8', 'ignore')
+    else:
+        import termios, tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+            if ch == '\x03':  # Ctrl+C
+                raise KeyboardInterrupt
+            if ch == '\x1b':
+                ch2 = sys.stdin.read(1)
+                if ch2 == '[':
+                    ch3 = sys.stdin.read(1)
+                    if ch3 == 'A': return 'up'
+                    if ch3 == 'B': return 'down'
+            if ch in ('\r', '\n'): return 'enter'
+            return ch
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+# -------------------------
+# Inline Menu Function
+# -------------------------
+def menu_select(items, header):
+    idx = 0
+    n = len(items)
+    sys.stdout.write(f"\n{BRIGHT_CYAN}{header}{RESET}\n")
+
+    def draw_menu():
+        for i, (label, _) in enumerate(items):
+            if i == idx:
+                sys.stdout.write(f"{BRIGHT_GREEN}[✔] {label}{RESET}\n")
+            else:
+                sys.stdout.write(f"{DIM}[ ] {label}{RESET}\n")
+        sys.stdout.flush()
+
+    draw_menu()
+
+    while True:
+        try:
+            key = read_key()
+        except KeyboardInterrupt:
+            sys.stdout.write(f"\n{BRIGHT_RED} Interrupted. Exiting.{RESET}\n")
+            sys.exit(1)
+
+        # Move cursor up n lines and clear them
+        for _ in range(n):
+            sys.stdout.write("\033[F" + CLEAR_LINE)
+
+        if key == 'up' and idx > 0:
+            idx -= 1
+        elif key == 'down' and idx < n - 1:
+            idx += 1
+        elif key == 'enter':
+            sel_label, sel_payload = items[idx]
+            sys.stdout.write(f"{BRIGHT_GREEN}Selected {sel_label}{RESET}\n")
+            sys.stdout.flush()
+            return sel_payload
+
+        draw_menu()
+
+# -------------------------
+# Interactive Fallback Mode
+# -------------------------
 if not args.url:
-    parser.print_help()
-    sys.exit(1)
+    print(f"{BRIGHT_CYAN}[ yt-nerddl] Interactive Mode{RESET}\n")
+    try:
+        url_input = input(f"{BRIGHT_YELLOW}Enter YouTube URL:{RESET} ").strip()
+        if not url_input:
+            print(f"{BRIGHT_RED} No URL provided. Exiting.{RESET}")
+            sys.exit(0)
+        args.url = url_input
+        
+        # Ask for Audio or Video
+        args.audio = menu_select([
+            ("Video (mp4)", False),
+            ("Audio only (mp3)", True)
+        ], "Select download format:")
+        
+        # Always trigger quality selector in interactive mode
+        args.quality = True
+    except KeyboardInterrupt:
+        print(f"\n{BRIGHT_RED} Interrupted. Exiting.{RESET}")
+        sys.exit(1)
 
 TARGET_DIR = os.path.abspath(args.output) if args.output else os.path.expanduser("~/Videos/Youtube")
 os.makedirs(TARGET_DIR, exist_ok=True)
@@ -99,16 +206,16 @@ if "music.youtube.com" in url:
 download_playlist = False
 if "list=" in url:
     try:
-        while True:
-            ans = input(f"{BRIGHT_YELLOW}Playlist detected. Download all videos? (y/n): {RESET}").strip().lower()
-            if ans in ("y", "n"):
-                break
-        if ans == "y":
-            download_playlist = True
-        else:
+        download_playlist = menu_select([
+            ("Download entire playlist", True),
+            ("Download single video", False)
+        ], "Playlist detected:")
+        
+        if not download_playlist:
             parts = urllib.parse.urlparse(url)
             q = urllib.parse.parse_qs(parts.query)
-            url = f"https://www.youtube.com/watch?v={q.get('v',[None])[0]}"
+            if 'v' in q:
+                url = f"https://www.youtube.com/watch?v={q['v'][0]}"
     except KeyboardInterrupt:
         print(f"\n{BRIGHT_RED} Interrupted. Exiting.{RESET}")
         sys.exit(1)
@@ -130,7 +237,12 @@ probe_opts = {
     "no_warnings": True,
     "logger": SilentLogger(),
     "noplaylist": not download_playlist,
+    "extractor_args": {"youtube": {"client": ["android"]}}  # Android client bypass
 }
+
+if args.cookies:
+    probe_opts["cookiesfrombrowser"] = (args.cookies,)
+
 try:
     with yt_dlp.YoutubeDL(probe_opts) as probe_ydl:
         info = probe_ydl.extract_info(url, download=False)
@@ -190,28 +302,19 @@ CANDIDATES = [
     ("2160p 60fps", {"min_h": 2160, "fps_min": 60, "fps_max": None}),
 ]
 
-# map candidates to format strings (fallback to reasonable query)
 def preset_to_format(label):
-    if "2160" in label:
-        return "bestvideo[height>=2160][fps>=60]+bestaudio/best"
-    if "1440" in label:
-        return "bestvideo[height<=1440][fps>30]+bestaudio/best"
-    if "1080" in label and "60" in label:
-        return "bestvideo[height<=1080][fps>30]+bestaudio/best"
-    if "1080" in label:
-        return "bestvideo[height<=1080][fps<=30]+bestaudio/best"
-    if "720" in label and "60" in label:
-        return "bestvideo[height<=720][fps>30]+bestaudio/best"
-    if "720" in label:
-        return "bestvideo[height<=720][fps<=30]+bestaudio/best"
-    # fallback generic
+    if "2160" in label: return "bestvideo[height>=2160][fps>=60]+bestaudio/best"
+    if "1440" in label: return "bestvideo[height<=1440][fps>30]+bestaudio/best"
+    if "1080" in label and "60" in label: return "bestvideo[height<=1080][fps>30]+bestaudio/best"
+    if "1080" in label: return "bestvideo[height<=1080][fps<=30]+bestaudio/best"
+    if "720" in label and "60" in label: return "bestvideo[height<=720][fps>30]+bestaudio/best"
+    if "720" in label:  return "bestvideo[height<=720][fps<=30]+bestaudio/best"
     try:
         h = int(label.split("p")[0])
         return f"bestvideo[height<={h}]+bestaudio/best"
     except Exception:
         return "bestvideo+bestaudio/best"
 
-# build available presets list (filter out non-existent ones)
 available_video_presets = []
 for label, req in CANDIDATES:
     ok = has_video_with(min_height=req.get("min_h"),
@@ -221,90 +324,14 @@ for label, req in CANDIDATES:
     if ok:
         available_video_presets.append((label, preset_to_format(label)))
 
-# fallback to 'best' if nothing matched
 if not available_video_presets:
     available_video_presets = [("Best available", "bestvideo+bestaudio/best")]
 
-# audio bitrate options detection
 audio_bitrate_options = []
 for t in (320, 256, 192, 128):
     if has_audio_with(min_abr=t):
         audio_bitrate_options.append((f"{t}kbps", str(t)))
-# always include 'Best' fallback
 audio_bitrate_options.append(("Best", "best"))
-
-# -------------------------
-# raw key reader
-# -------------------------
-def read_key():
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        ch = sys.stdin.read(1)
-        if ch == "\x1b":
-            # arrow sequences send two more bytes
-            ch += sys.stdin.read(2)
-        return ch
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-
-# -------------------------
-# inline menu (prints header once; redraws only list)
-# -------------------------
-def menu_select(items, header):
-    idx = 0
-    n = len(items)
-    # Print header
-    sys.stdout.write(f"\n{BRIGHT_CYAN}{header}{RESET}\n")
-    # Print list lines once
-    for i, (label, _) in enumerate(items):
-        if i == idx:
-            sys.stdout.write(f"{BRIGHT_GREEN}[✔] {label}{RESET}\n")
-        else:
-            sys.stdout.write(f"{DIM}[ ] {label}{RESET}\n")
-    sys.stdout.flush()
-
-    while True:
-        try:
-            key = read_key()
-        except KeyboardInterrupt:
-            sys.stdout.write(f"\n{BRIGHT_RED} Interrupted. Exiting.{RESET}\n")
-            sys.exit(1)
-
-        # move cursor up n lines to the first list line
-        for _ in range(n):
-            sys.stdout.write("\033[F")
-        # clear only the list lines (leave header intact)
-        for _ in range(n):
-            sys.stdout.write(CLEAR_LINE + "\n")
-        # move cursor up n lines again to position cursor for redrawing list
-        for _ in range(n):
-            sys.stdout.write("\033[F")
-
-        if key == "\x1b[A" and idx > 0:
-            idx -= 1
-        elif key == "\x1b[B" and idx < n - 1:
-            idx += 1
-        elif key in ("\r", "\n"):
-            # clear list lines once more and print single-line confirmation
-            for _ in range(n):
-                sys.stdout.write(CLEAR_LINE + "\n")
-            for _ in range(n):
-                sys.stdout.write("\033[F")
-            sel_label, sel_payload = items[idx]
-            sys.stdout.write(CLEAR_LINE)
-            sys.stdout.write(f"{BRIGHT_GREEN}Selected {sel_label}{RESET}\n")
-            sys.stdout.flush()
-            return sel_payload
-
-        # redraw the list only
-        for i, (label, _) in enumerate(items):
-            if i == idx:
-                sys.stdout.write(f"{BRIGHT_GREEN}[✔] {label}{RESET}\n")
-            else:
-                sys.stdout.write(f"{DIM}[ ] {label}{RESET}\n")
-        sys.stdout.flush()
 
 # -------------------------
 # pick format based on mode and options
@@ -315,32 +342,26 @@ QUALITY_LABEL = "auto"
 
 try:
     if args.audio:
-        # audio mode: allow bitrate selection if -q
         items = [(lab, payload) for lab, payload in audio_bitrate_options]
         if args.quality and len(items) > 1:
-            selected_audio_quality = menu_select(items, "Select audio quality (↑ ↓, Enter):")
+            selected_audio_quality = menu_select(items, "Select audio quality:")
             QUALITY_LABEL = selected_audio_quality if selected_audio_quality != "best" else "Best audio"
         else:
             selected_audio_quality = items[0][1] if items else "best"
             QUALITY_LABEL = items[0][0] if items else "Best audio"
-        # default download format
         ytdl_format = "bestaudio/best"
     else:
-        # video mode
         items = [(lab, fmt) for lab, fmt in available_video_presets]
         if args.high:
-            # pick highest available preset (last one)
             selected_format = items[-1][1]
             QUALITY_LABEL = items[-1][0]
         elif args.quality:
-            selected_format = menu_select(items, "Select video quality (↑ ↓, Enter):")
-            # find label for selected_format
+            selected_format = menu_select(items, "Select video quality:")
             for lab, fmt in items:
                 if fmt == selected_format:
                     QUALITY_LABEL = lab
                     break
         else:
-            # default to a reasonable middle-high preset: try 1080p if present, else last
             prefer_label = "1080p 30fps"
             found = False
             for lab, fmt in items:
@@ -358,7 +379,7 @@ except KeyboardInterrupt:
     sys.exit(1)
 
 # -------------------------
-# prepare yt-dlp options (download)
+# prepare yt-dlp options
 # -------------------------
 MODE = "Audio" if args.audio else "Video"
 FORMAT_OUT = "mp3" if args.audio else "mp4"
@@ -371,14 +392,16 @@ ytdl_opts = {
     "merge_output_format": "mp4",
     "noplaylist": not download_playlist,
     "progress_hooks": [],
+    "extractor_args": {"youtube": {"client": ["android"]}}  # Android client bypass
 }
+
+if args.cookies:
+    ytdl_opts["cookiesfrombrowser"] = (args.cookies,)
 
 if args.audio:
     ytdl_opts["format"] = ytdl_format
-    # set mp3 postprocessor config
     prefq = "0"
     if selected_audio_quality and selected_audio_quality != "best":
-        # selected_audio_quality might be "320" string
         prefq = selected_audio_quality
     ytdl_opts["postprocessors"] = [{
         "key": "FFmpegExtractAudio",
@@ -389,7 +412,7 @@ else:
     ytdl_opts["format"] = ytdl_format
 
 # -------------------------
-# progress hook (shows Audio/Video correctly)
+# progress hook
 # -------------------------
 start_time = None
 
@@ -397,17 +420,12 @@ def human_time(sec):
     return str(timedelta(seconds=int(sec)))
 
 def stream_label_from_dict(d):
-    # If forced audio mode, call it Audio
-    if args.audio:
-        return "Audio"
+    if args.audio: return "Audio"
     vcodec = d.get("vcodec")
     acodec = d.get("acodec")
-    if vcodec == "none":
-        return "Audio"
-    if vcodec:
-        return "Video"
-    if acodec:
-        return "Audio"
+    if vcodec == "none": return "Audio"
+    if vcodec: return "Video"
+    if acodec: return "Audio"
     return "Video"
 
 def progress_hook(d):
@@ -440,15 +458,14 @@ def progress_hook(d):
 ytdl_opts["progress_hooks"].append(progress_hook)
 
 # -------------------------
-# run download (with ctrl+c handling)
+# run download
 # -------------------------
 try:
-    sys.stdout.write(f"{BRIGHT_CYAN} Fetching from YouTube…{RESET}\n\n")
+    sys.stdout.write(f"\n{BRIGHT_CYAN} Fetching from YouTube…{RESET}\n\n")
     sys.stdout.flush()
     with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
-        info = ydl.extract_info(url)  # triggers progress_hook
+        info = ydl.extract_info(url)
         output_file = ydl.prepare_filename(info)
-        # handle mp3 final name
         if args.audio:
             output_file = os.path.splitext(output_file)[0] + ".mp3"
 except KeyboardInterrupt:
@@ -481,4 +498,4 @@ print(f"{BRIGHT_CYAN}Quality:{RESET}  {QUALITY_LABEL}")
 print(f"{BRIGHT_CYAN}Length:{RESET}   {duration}")
 print(f"{BRIGHT_CYAN}Size:{RESET}     {final_size_mb:.1f} MB")
 print(f"\n{BRIGHT_CYAN}󱫐 Time taken:{RESET} {human_time(total_elapsed)} | {BRIGHT_CYAN}Avg:{RESET} {avg_speed:.2f} MB/s")
-print(f"{BRIGHT_GREEN}✔ Saved at:{BRIGHT_WHITE}   {output_file}{RESET}\n")
+print(f"{BRIGHT_GREEN}✔ Saved to:{BRIGHT_WHITE}   {output_file}{RESET}\n")
