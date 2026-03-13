@@ -70,7 +70,7 @@ parser.add_argument("-q", "--quality", action="store_true", help="Interactive qu
 parser.add_argument("-v", "--version", action="store_true", help="Show version and exit")
 args = parser.parse_args()
 
-VERSION = "4.4.0"
+VERSION = "2026.03.13"
 if args.version:
     print(f"yt-nerddl version {VERSION}")
     sys.exit(0)
