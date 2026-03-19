@@ -1,5 +1,8 @@
 <div align="center">
 
+
+**Check out the [website](https://theanonymouscrusher.github.io/yt-nerddl/) for easier reading ;)**
+
 <img src="banner.png" width="40%">
 
 ### A sleek YouTube downloader built on top of `yt-dlp`
