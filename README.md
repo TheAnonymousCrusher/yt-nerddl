@@ -7,14 +7,11 @@
 Clean interactive selector • Deno-style progress bar • Minimal CLI UX
 
 <br>
-<div align="center">
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Backend](https://img.shields.io/badge/Backend-yt--dlp-red?style=for-the-badge)
+![Backend](https://pfst.cf2.poecdn.net/base/image/67f5633c40d1ea58caf6fe2f49bf49c20a30a20a9d62673d826d86f513f3a7c1?pmaid=589400062)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20|%20macOS%20|%20Windows-2bbc8a?style=for-the-badge)
-![License](https://img.shields.io/badge/License-MIT-black?style=for-the-badge)
-
-</div>
+![License](https://pfst.cf2.poecdn.net/base/image/70d4d2458d4e49ac766c5c0f52cc3b028e1a743f5e9d35df81f5b84d572c5429?pmaid=589400059)
 
 Inspired by [animepahe-cli](https://github.com/Danushka-Madushan/animepahe-cli)
 
@@ -33,26 +30,33 @@ Inspired by [animepahe-cli](https://github.com/Danushka-Madushan/animepahe-cli)
 
 </div>
 
-> **Note**  
-> Currently supports **YouTube** and **YouTube Music**
+> Tested only on **YouTube** & **YouTube Music**.  
+> This is a `yt-dlp` wrapper, so other sites *might* work — but they are **untested** and **at your own risk**.  
+>  
+> `yt-dlp` can also download arbitrary hosted files (not just media). `yt-nerddl` will warn if a URL looks non-media/generic.
 
-**Current Version:** `v2026.03.13` [Friday the 13th Edition ;)]
+**Current Version:** `v2026.03.20`
 
 ---
 
 # Features
 
-✔ Audio & Video downloads  
-✔ Interactive quality selector  
-✔ Playlist detection  
-✔ Deno-inspired progress bar  
-✔ YouTube Music URL support  
-✔ Automatic MP3 conversion  
-✔ Cross-platform CLI menus  
-✔ Cookie extraction for age-restricted videos  
-✔ Built-in auto updater  
-✔ Clean minimal console output  
-✔ Safe interrupt handling (`Ctrl+C`)
+✔ Audio & Video downloads <br>
+✔ Interactive quality selector (arrow keys + numeric fallback) <br>
+✔ Playlist detection <br>
+✔ Deno-inspired progress bar <br>
+✔ YouTube Music URL support <br>
+✔ Automatic MP3 conversion <br>
+✔ Cross-platform CLI menus <br>
+✔ Cookie extraction for age-restricted videos <br>
+✔ Built-in auto updater <br>
+✔ Config + themes (`config.toml`, bundled themes) <br>
+✔ Customizable progress bar width + glyphs (config overrides) <br>
+✔ Resume + retries for shaky internet (`continuedl`, `retries`, `fragment_retries`) <br>
+✔ Debug mode (`--debug`) <br>
+✔ Skip prompts (`--yes`) <br>
+✔ Clean minimal console output <br>
+✔ Safe interrupt handling (`Ctrl+C`) <br>
 
 ---
 
@@ -60,31 +64,27 @@ Inspired by [animepahe-cli](https://github.com/Danushka-Madushan/animepahe-cli)
 
 ## Requirements
 
-- Python **3.11+**
+- **Python 3.11+**
 - `yt-dlp`
-- `ffmpeg`
+- `ffmpeg` (recommended; required for merge/mp3 conversion)
 - [Nerd Font](https://www.nerdfonts.com) (for icons)
 
----
-
-# Install (Linux / macOS)
+## Install (Linux / macOS)
 
 ```bash
-git clone https://github.com/TheAnonymousCrusher/yt-nerddl.git
+git clone [https://github.com/TheAnonymousCrusher/yt-nerddl.git](https://github.com/TheAnonymousCrusher/yt-nerddl.git)
 cd yt-nerddl
 chmod +x yt-nerddl.py
 sudo mv yt-nerddl.py /usr/local/bin/yt-nerddl
-```
+````
 
-Run it:
+**Run it:**
 
 ```bash
-yt-nerddl [options] <youtube-url>
+yt-nerddl [options] <url>
 ```
 
----
-
-# [NOT RECOMMENDED] AUR (Arch Linux)
+### [NOT RECOMMENDED] AUR (Arch Linux)
 
 Older versions may appear in AUR.
 
@@ -92,157 +92,142 @@ Older versions may appear in AUR.
 yay -S yt-nerddl
 ```
 
-Works with:
+Works with: `yay`, `paru`, `pikaur`.
 
-- yay  
-- paru  
-- pikaur  
+## Windows Installation
 
----
+1.  **Install Python**: Install Python 3.11+
+2.  **Install FFmpeg**: Make sure `ffmpeg` is in your PATH.
+3.  **Clone repository**:
+  
+    ```bash
+    git clone [https://github.com/TheAnonymousCrusher/yt-nerddl.git](https://github.com/TheAnonymousCrusher/yt-nerddl.git)
+    cd yt-nerddl
+    ```
+4. **Install dependencies**:
+ 
+    ```bash
+    pip install -r requirements.txt
+    ```
+5.  **Run**:
+  
+    ```bash
+    python yt-nerddl.py [options] <url>
+    ```
 
-# Windows Installation
+> *Use Windows Terminal + Nerd Font for proper icon rendering.*
 
-### 1 Install Python
-
-Install **Python 3.11+**
-
-### 2 Install FFmpeg
-
-Make sure `ffmpeg` is in PATH.
-
-### 3 Clone repository
-
-```bash
-git clone https://github.com/TheAnonymousCrusher/yt-nerddl.git
-cd yt-nerddl
-```
-
-### 4 Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 5 Run
-
-```bash
-python yt-nerddl.py [options] <url>
-```
-
-Use **Windows Terminal + Nerd Font** for proper icon rendering.
-
----
+-----
 
 # Usage
 
-Basic command:
+**Basic command:**
 
 ```bash
 yt-nerddl [options] <url>
 ```
 
----
-
-# Options
+### Options
 
 | Option | Description |
-|------|------|
-| `-a`, `--audio` | Download audio only (MP3) |
-| `-q`, `--quality` | Interactive quality selector |
-| `-H`, `--high` | Download highest available quality |
-| `-c`, `--cookies <browser>` | Use browser cookies for 18+ videos |
-| `-o`, `--output <dir>` | Specify output directory |
-| `-U`, `--update` | Update script from GitHub |
-| `-v`, `--version` | Show version |
+| :--- | :--- |
+| `-a, --audio` | Download audio only (MP3) |
+| `--video` | Force video mode |
+| `-q, --quality` | Interactive quality selector |
+| `-H, --high` | Download highest available quality |
+| `-c, --cookies <browser>` | Use browser cookies for age-restricted content |
+| `--no-cookies` | Disable cookies even if enabled in config |
+| `-o, --output <dir>` | Specify output directory |
+| `-y, --yes` | Skip prompts/menus (use defaults/config) |
+| `--debug` | Print detected domain, selected format, and yt-dlp options |
+| `--theme <name>` | Theme override for this run |
+| `--theme-preview` | List installed themes + preview |
+| `--no-icons` | Disable icons for this run |
+| `--no-colors` | Disable ANSI colors for this run |
+| `--config <path>` | Use a custom config.toml path |
+| `--init-config` | Create config + bundled themes and exit |
+| `-U, --update` | Update script from GitHub |
+| `-v, --version` | Show version |
 
----
+-----
 
 # Examples
 
-Download with quality selector:
+**Download with quality selector:**
 
 ```bash
-yt-nerddl -q https://youtube.com/watch?v=xxxx
+yt-nerddl -q [https://youtube.com/watch?v=xxxx](https://youtube.com/watch?v=xxxx)
 ```
 
-Download audio only:
+**Skip prompts (use config defaults):**
 
 ```bash
-yt-nerddl -a https://youtube.com/watch?v=xxxx
+yt-nerddl -q --yes [https://youtube.com/watch?v=xxxx](https://youtube.com/watch?v=xxxx)
 ```
 
-Download highest quality:
+**Download audio only:**
 
 ```bash
-yt-nerddl -H https://youtube.com/watch?v=xxxx
+yt-nerddl -a [https://youtube.com/watch?v=xxxx](https://youtube.com/watch?v=xxxx)
 ```
 
-Download age-restricted video:
-
-```bash
-yt-nerddl -q -c firefox https://youtube.com/watch?v=xxxx
-```
-
-Download playlist:
-
-```bash
-yt-nerddl -H https://youtube.com/playlist?list=xxxx
-```
-
-Update the script:
+**Update the script:**
 
 ```bash
 yt-nerddl -U
 ```
 
----
+-----
 
-# Output Directory
+# Configuration
 
-Default download locations:
+`yt-nerddl` auto-creates a config on first run.
+
+**Default locations:**
+
+  - **Linux/macOS:** `~/.config/yt-nerddl/config.toml`
+  - **Windows:** `%APPDATA%\yt-nerddl\config.toml`
+
+### Progress bar customization
+
+You can override the bar glyphs in your `config.toml`:
+
+```toml
+[ui]
+progress_bar_width = 30
+progress_fill = "▰"
+progress_empty = "▱"
+```
+-----
+
+### Downloading Mature/Member only Content
+
+Check out [mature_content.md](https://github.com/TheAnonymousCrusher/yt-nerddl/blob/main/mature_content.md) for details.
+
+-----
+
+### Output Directory
 
 | OS | Path |
-|---|---|
-| Linux / macOS | `~/Videos/Youtube` |
-| Windows | `%USERPROFILE%\Videos\Youtube` |
+| :--- | :--- |
+| **Linux / macOS** | `~/Videos/Youtube` |
+| **Windows** | `%USERPROFILE%\Videos\Youtube` |
 
----
-
-# Philosophy
-
-`yt-nerddl` exists to make downloading YouTube content **simple and intuitive**.
-
-Instead of remembering complicated `yt-dlp` commands, users get:
-
-• an interactive selector  
-• clear progress feedback  
-• sensible defaults  
-• minimal CLI noise  
-
-Think of it as **yt-dlp with a modern interactive wrapper**.
-
----
+-----
 
 # Contributing
 
-Pull requests and issues are welcome.
-
-Guidelines:
-
-- Keep the CLI clean
-- Maintain readable colors
-- Preserve smooth UX
-- Avoid unnecessary dependencies
+Pull requests and issues are welcome. Keep the CLI clean, maintain readable colors, and preserve smooth UX.
 
 # Acknowledgements
 
-- `yt-dlp` project  
-- `animepahe-cli` for UX inspiration
+  - `yt-dlp` project
+  - `animepahe-cli` for UX inspiration
 
----
+<hr>
 
 <div align="center">
 
-Made for people who like **fast tools and clean terminals**
+**Made for people who like fast tools and clean terminals**
 
 </div>
