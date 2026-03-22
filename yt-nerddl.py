@@ -8,6 +8,8 @@ yt-nerddl — a sleek yt-dlp wrapper with:
 - optional self-updater (downloads latest script from GitHub raw)
 - resumable downloads + retries (continuedl / retries / fragment_retries)
 - safer UX for non-YouTube URLs (dynamic service banner + warnings)
+- best-effort overwrite prompt for single-item downloads
+- best-effort YouTube Music audio metadata / cover-art polish
 
 Requires:
   - Python 3.11+
@@ -18,6 +20,7 @@ Requires:
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 import sys
 import time
@@ -28,6 +31,7 @@ import tempfile
 import shutil
 import re
 import pprint
+import subprocess
 from pathlib import Path
 from datetime import timedelta
 
@@ -35,22 +39,21 @@ import tomllib
 import yt_dlp
 
 
-# ------------------------------------------------------------
-# Version + updater
-# ------------------------------------------------------------
 APP_NAME = "yt-nerddl"
-VERSION = "2026.03.20"
+VERSION = "2026.03.25"
 
-# Update URL (change if your repo/branch/script name differs)
+# Keep this pointed at the stable repo path. The local filename can be versioned or plain.
 UPDATE_URL = "https://raw.githubusercontent.com/TheAnonymousCrusher/yt-nerddl/main/yt-nerddl.py"
+MATURE_CONTENT_URL = "https://github.com/TheAnonymousCrusher/yt-nerddl/blob/main/mature_content.md"
+
+DEFAULT_YOUTUBE_OUTPUT_DIR = "~/Videos/Youtube"
+DEFAULT_OTHER_OUTPUT_DIR = "~/Videos"
+
+VIDEO_EXTS = {"mp4", "mkv", "webm", "mov", "flv", "avi", "m4v"}
+AUDIO_EXTS = {"m4a", "mp3", "opus", "ogg", "aac", "flac", "wav"}
 
 
-# ------------------------------------------------------------
-# Default config + bundled themes (written to user config dir)
-# NOTE: Theme files use TOML \u001b escape (valid TOML) instead
-# of \033 (NOT valid TOML).
-# ------------------------------------------------------------
-DEFAULT_CONFIG_TOML = """\
+DEFAULT_CONFIG_TOML = f"""\
 # yt-nerddl config.toml
 # Auto-generated on first run.
 #
@@ -65,11 +68,11 @@ DEFAULT_CONFIG_TOML = """\
 mode = "video"                 # "video" | "audio"
 quality = "1080p30"            # video preset key (see README)
 audio_bitrate = 320            # 320 | 256 | 192 | 128 | "best"
-output_directory = "~/Videos/Youtube"
+output_directory = "{DEFAULT_YOUTUBE_OUTPUT_DIR}"  # default for YouTube / YouTube Music; non-YouTube falls back to ~/Videos if unchanged
 
 [behavior]
 interactive = false
-playlist = "ask"               # "ask" | "video" | "playlist"
+playlist = "ask"               # "ask" | "video" | "playlist" (CLI: --no-playlist forces single-video)
 check_internet = true
 assume_yes = false             # if true: never prompt; use defaults/config
 
@@ -92,8 +95,6 @@ colors = true
 """
 
 THEME_DEFAULT_TOML = """\
-# default.toml (matches the current hardcoded vibe)
-
 [colors]
 accent  = "\\u001b[1;36m"
 success = "\\u001b[1;32m"
@@ -114,8 +115,6 @@ time     = "󱫐"
 """
 
 THEME_CATPPUCCIN_TOML = """\
-# catppuccin.toml (256-color-ish, terminal dependent)
-
 [colors]
 accent  = "\\u001b[38;5;111m"
 success = "\\u001b[38;5;114m"
@@ -136,8 +135,6 @@ time     = "󱫐"
 """
 
 THEME_GRUVBOX_TOML = """\
-# gruvbox.toml (approx)
-
 [colors]
 accent  = "\\u001b[38;5;208m"
 success = "\\u001b[38;5;142m"
@@ -158,8 +155,6 @@ time     = "󱫐"
 """
 
 THEME_NORD_TOML = """\
-# nord.toml (approx)
-
 [colors]
 accent  = "\\u001b[38;5;110m"
 success = "\\u001b[38;5;108m"
@@ -187,25 +182,20 @@ BUNDLED_THEMES: dict[str, str] = {
 }
 
 
-# ------------------------------------------------------------
-# Config directory helpers (cross-platform)
-# ------------------------------------------------------------
 def get_default_config_dir() -> Path:
     if os.name == "nt":
         base = os.environ.get("APPDATA")
         if base:
             return Path(base) / APP_NAME
-        # Fallback (should rarely happen)
         return Path.home() / "AppData" / "Roaming" / APP_NAME
-    else:
-        base = os.environ.get("XDG_CONFIG_HOME")
-        if base:
-            return Path(base) / APP_NAME
-        return Path.home() / ".config" / APP_NAME
+
+    base = os.environ.get("XDG_CONFIG_HOME")
+    if base:
+        return Path(base) / APP_NAME
+    return Path.home() / ".config" / APP_NAME
 
 
 def ensure_file(path: Path, content: str) -> bool:
-    """Write file if it does not exist. Returns True if created."""
     if path.exists():
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -214,12 +204,6 @@ def ensure_file(path: Path, content: str) -> bool:
 
 
 def init_config_and_themes(config_path: Path) -> dict[str, bool]:
-    """
-    Creates missing:
-      - config.toml
-      - themes/*.toml
-    Returns flags about what was created.
-    """
     config_dir = config_path.parent
     themes_dir = config_dir / "themes"
 
@@ -246,7 +230,6 @@ def load_toml_file(path: Path) -> dict:
 
 
 def deep_merge(a: dict, b: dict) -> dict:
-    """Merge dict b into a recursively (modifies a)."""
     for k, v in (b or {}).items():
         if isinstance(v, dict) and isinstance(a.get(k), dict):
             deep_merge(a[k], v)
@@ -261,14 +244,11 @@ def expand_path(p: str) -> str:
     return os.path.abspath(p)
 
 
-# ------------------------------------------------------------
-# ANSI support (Windows VT + general TTY check)
-# ------------------------------------------------------------
 def enable_windows_vt_mode() -> bool:
     if os.name != "nt":
         return True
     try:
-        import ctypes  # stdlib
+        import ctypes
 
         kernel32 = ctypes.windll.kernel32
         STD_OUTPUT_HANDLE = -11
@@ -303,15 +283,12 @@ CLEAR_LINE = f"{ESC}[2K" if ANSI_OK else ""
 CURSOR_PREV_LINE = f"{ESC}[F" if ANSI_OK else ""
 
 
-# ------------------------------------------------------------
-# UI + theme loading
-# ------------------------------------------------------------
 DEFAULTS = {
     "downloads": {
         "mode": "video",
         "quality": "1080p30",
         "audio_bitrate": 320,
-        "output_directory": "~/Videos/Youtube",
+        "output_directory": DEFAULT_YOUTUBE_OUTPUT_DIR,
     },
     "behavior": {
         "interactive": False,
@@ -340,11 +317,8 @@ DEFAULTS = {
 
 
 def get_theme_search_dirs(config_dir: Path) -> list[Path]:
-    dirs: list[Path] = []
-    # 1) user themes
-    dirs.append(config_dir / "themes")
+    dirs: list[Path] = [config_dir / "themes"]
 
-    # 2) system themes (nice-to-have; mostly for package installs)
     if os.name != "nt":
         dirs.append(Path("/usr/local/share") / APP_NAME / "themes")
         dirs.append(Path("/usr/share") / APP_NAME / "themes")
@@ -353,7 +327,6 @@ def get_theme_search_dirs(config_dir: Path) -> list[Path]:
         if programdata:
             dirs.append(Path(programdata) / APP_NAME / "themes")
 
-    # 3) portable themes next to script (optional)
     try:
         script_dir = Path(__file__).resolve().parent
         dirs.append(script_dir / "themes")
@@ -369,9 +342,8 @@ def find_theme_files(config_dir: Path) -> dict[str, Path]:
         if not d.exists():
             continue
         for p in d.glob("*.toml"):
-            name = p.stem
-            if name not in out:
-                out[name] = p
+            if p.stem not in out:
+                out[p.stem] = p
     return out
 
 
@@ -380,8 +352,7 @@ def load_theme_data(theme_name: str, config_dir: Path) -> dict:
     files = find_theme_files(config_dir)
     if theme_name in files:
         return load_toml_file(files[theme_name])
-    # fallback to built-in default if theme missing
-    return load_toml_file((config_dir / "themes" / "default.toml")) or tomllib.loads(THEME_DEFAULT_TOML)
+    return load_toml_file(config_dir / "themes" / "default.toml") or tomllib.loads(THEME_DEFAULT_TOML)
 
 
 def build_ui(theme_data: dict, ui_cfg: dict) -> dict:
@@ -402,7 +373,6 @@ def build_ui(theme_data: dict, ui_cfg: dict) -> dict:
             return fallback
         return str(icons.get(key, fallback))
 
-    # sensible ASCII-ish fallbacks when icons are off
     icon_fallbacks = {
         "youtube": "[YT]",
         "success": "OK!",
@@ -415,13 +385,11 @@ def build_ui(theme_data: dict, ui_cfg: dict) -> dict:
         bar_width = int(bar_width)
     except Exception:
         bar_width = 25
-    bar_width = max(10, min(80, bar_width))  # keep sane
+    bar_width = max(10, min(80, bar_width))
 
-    # theme defaults
     fill_theme = str(progress.get("fill", "▰"))
     empty_theme = str(progress.get("empty", "▱"))
 
-    # config overrides ("" means: use theme)
     fill_override = str(ui_cfg.get("progress_fill", "") or "")
     empty_override = str(ui_cfg.get("progress_empty", "") or "")
 
@@ -457,12 +425,431 @@ def paint(ui: dict, color_key: str, text: str) -> str:
     return f"{ui.get(color_key, '')}{text}{ui.get('reset', '')}"
 
 
-# ------------------------------------------------------------
-# Cross-platform key reader (arrow keys) + menu
-# ------------------------------------------------------------
+def first_non_empty(*values) -> str:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            nested = first_non_empty(*value)
+            if nested:
+                return nested
+            continue
+        if isinstance(value, dict):
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def sanitize_filename_component(text: str, replacement: str = "_") -> str:
+    text = str(text or "").strip()
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', replacement, text)
+    text = re.sub(r"\s+", " ", text)
+    text = text.strip(" .")
+    return text or "untitled"
+
+
+def normalize_compare_path(p: str) -> str:
+    return os.path.normcase(os.path.normpath(expand_path(p)))
+
+
+def choose_output_directory(raw_output_dir: str, is_youtube_family: bool, cli_overridden: bool) -> tuple[str, bool]:
+    raw = (raw_output_dir or DEFAULT_YOUTUBE_OUTPUT_DIR).strip() or DEFAULT_YOUTUBE_OUTPUT_DIR
+    if cli_overridden:
+        return expand_path(raw), False
+    if not is_youtube_family and normalize_compare_path(raw) == normalize_compare_path(DEFAULT_YOUTUBE_OUTPUT_DIR):
+        return expand_path(DEFAULT_OTHER_OUTPUT_DIR), True
+    return expand_path(raw), False
+
+
+def human_time(seconds: float | int | None) -> str:
+    try:
+        total = max(0, int(float(seconds or 0)))
+    except Exception:
+        total = 0
+    return str(timedelta(seconds=total))
+
+
+def label_from_extension(ext: str, default: str = "File") -> str:
+    ext = (ext or "").strip().lower().lstrip(".")
+    if ext in AUDIO_EXTS:
+        return "Audio"
+    if ext in VIDEO_EXTS:
+        return "Video"
+    if ext:
+        return ext.upper()
+    return default
+
+
+def build_mode_label(output_file: str, requested_audio: bool) -> str:
+    ext = Path(output_file).suffix.lower().lstrip(".") if output_file else ""
+    if requested_audio:
+        return f"Audio - {ext}" if ext else "Audio"
+
+    label = label_from_extension(ext, default="Video")
+    if label in {"Video", "Audio"}:
+        return f"{label} - {ext}" if ext else label
+    if ext:
+        return f"File - {ext}"
+    return "Video"
+
+
+def ask_yes_no(ui: dict, question: str, default: bool = False) -> bool:
+    if not sys.stdin.isatty():
+        return default
+
+    suffix = " [Y/n]: " if default else " [y/N]: "
+    while True:
+        try:
+            raw = input(paint(ui, "text", question + suffix)).strip().lower()
+        except KeyboardInterrupt:
+            print()
+            raise
+        if not raw:
+            return default
+        if raw in {"y", "yes"}:
+            return True
+        if raw in {"n", "no"}:
+            return False
+        print(paint(ui, "warning", "Please answer y or n."))
+
+
+def build_preferred_audio_stem(info: dict) -> str:
+    if not isinstance(info, dict):
+        return ""
+
+    track = first_non_empty(info.get("track"), info.get("title"))
+    artist = first_non_empty(
+        info.get("artist"),
+        info.get("album_artist"),
+        info.get("creator"),
+        info.get("uploader"),
+        info.get("channel"),
+        info.get("artists"),
+    )
+
+    if not track:
+        return ""
+
+    if artist:
+        track_l = track.lower()
+        artist_l = artist.lower()
+        if track_l == artist_l or track_l.startswith(artist_l + " - "):
+            stem = track
+        else:
+            stem = f"{artist} - {track}"
+    else:
+        stem = track
+
+    return sanitize_filename_component(stem)
+
+
+def pick_best_square_thumbnail_url(info: dict) -> str | None:
+    thumbs = info.get("thumbnails") or []
+    best_url = None
+    best_area = -1
+
+    for thumb in thumbs:
+        if not isinstance(thumb, dict):
+            continue
+        url = str(thumb.get("url") or "").strip()
+        try:
+            width = int(thumb.get("width") or 0)
+            height = int(thumb.get("height") or 0)
+        except Exception:
+            width = 0
+            height = 0
+
+        if not url or not width or not height:
+            continue
+
+        ratio = width / height if height else 0.0
+        if 0.94 <= ratio <= 1.06:
+            area = width * height
+            if area > best_area:
+                best_area = area
+                best_url = url
+
+    return best_url
+
+
+def download_url_to_file(url: str, dest: Path) -> bool:
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            dest.write_bytes(resp.read())
+        return True
+    except Exception:
+        return False
+
+
+def embed_cover_with_ffmpeg(audio_path: Path, image_path: Path) -> bool:
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        return False
+
+    tmp_out = audio_path.with_name(audio_path.stem + ".covertmp" + audio_path.suffix)
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(audio_path),
+        "-i",
+        str(image_path),
+        "-map",
+        "0:a:0",
+        "-map",
+        "1:0",
+        "-c:a",
+        "copy",
+        "-c:v",
+        "mjpeg",
+        "-map_metadata",
+        "0",
+        "-id3v2_version",
+        "3",
+        "-metadata:s:v",
+        "title=Album cover",
+        "-metadata:s:v",
+        "comment=Cover (front)",
+        "-disposition:v:0",
+        "attached_pic",
+        str(tmp_out),
+    ]
+
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode != 0 or not tmp_out.exists():
+            try:
+                tmp_out.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
+
+        os.replace(tmp_out, audio_path)
+        return True
+    except Exception:
+        try:
+            tmp_out.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
+
+
+def maybe_embed_square_cover(output_file: str, square_url: str | None, ui: dict, debug: bool = False) -> bool:
+    if not output_file or not square_url:
+        return False
+
+    audio_path = Path(output_file)
+    if not audio_path.exists():
+        return False
+
+    if shutil.which("ffmpeg") is None:
+        if debug:
+            print(paint(ui, "dim", "[debug] Square cover skip: ffmpeg not found."))
+        return False
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="yt-nerddl-cover-") as td:
+            parsed = urllib.parse.urlparse(square_url)
+            suffix = Path(parsed.path).suffix or ".jpg"
+            image_path = Path(td) / f"cover{suffix}"
+
+            if not download_url_to_file(square_url, image_path):
+                if debug:
+                    print(paint(ui, "dim", "[debug] Square cover download failed; keeping default thumbnail."))
+                return False
+
+            ok = embed_cover_with_ffmpeg(audio_path, image_path)
+            if debug:
+                if ok:
+                    print(paint(ui, "dim", "[debug] Re-embedded square cover art."))
+                else:
+                    print(paint(ui, "dim", "[debug] Square cover embed failed; keeping default thumbnail."))
+            return ok
+    except Exception:
+        if debug:
+            print(paint(ui, "dim", "[debug] Square cover pass threw an exception; keeping default thumbnail."))
+        return False
+
+
+def maybe_rename_audio_output(
+    output_file: str,
+    info: dict,
+    ui: dict,
+    debug: bool = False,
+    allow_overwrite: bool = False,
+) -> str:
+    if not output_file or not os.path.exists(output_file):
+        return output_file
+
+    preferred_stem = build_preferred_audio_stem(info)
+    if not preferred_stem:
+        return output_file
+
+    current = Path(output_file)
+    target = current.with_name(preferred_stem + current.suffix)
+
+    if normalize_compare_path(str(current)) == normalize_compare_path(str(target)):
+        return output_file
+
+    if target.exists() and not allow_overwrite:
+        if debug:
+            print(
+                paint(
+                    ui,
+                    "dim",
+                    f"[debug] Pretty audio name already exists, keeping current path: {str(target)}",
+                )
+            )
+        return output_file
+
+    try:
+        os.replace(current, target)
+        if debug:
+            print(paint(ui, "dim", f"[debug] Renamed audio output to: {str(target)}"))
+        return str(target)
+    except Exception:
+        return output_file
+
+
+def maybe_finalize_audio_output(
+    output_file: str,
+    primary_info: dict,
+    fallback_info: dict,
+    is_youtube_music: bool,
+    ui: dict,
+    debug: bool = False,
+    allow_overwrite: bool = False,
+) -> str:
+    if not output_file or not os.path.exists(output_file):
+        return output_file
+
+    info = primary_info if isinstance(primary_info, dict) else {}
+    fallback = fallback_info if isinstance(fallback_info, dict) else {}
+
+    source_for_name = info if build_preferred_audio_stem(info) else fallback
+    should_pretty_name = is_youtube_music or bool(
+        first_non_empty(info.get("track"), info.get("artist"), fallback.get("track"), fallback.get("artist"))
+    )
+
+    if should_pretty_name:
+        output_file = maybe_rename_audio_output(
+            output_file,
+            source_for_name,
+            ui,
+            debug=debug,
+            allow_overwrite=allow_overwrite,
+        )
+
+    square_url = None
+    if is_youtube_music:
+        square_url = pick_best_square_thumbnail_url(info) or pick_best_square_thumbnail_url(fallback)
+
+    if square_url:
+        maybe_embed_square_cover(output_file, square_url, ui, debug=debug)
+
+    return output_file
+
+
+def build_single_output_candidates(info: dict, ytdl_opts: dict, is_audio: bool) -> list[Path]:
+    if not isinstance(info, dict):
+        return []
+
+    try:
+        tmp_opts = {k: v for k, v in ytdl_opts.items() if k not in {"progress_hooks", "postprocessor_hooks", "logger"}}
+        tmp_opts.update({"quiet": True, "no_warnings": True, "logger": SilentLogger()})
+        with yt_dlp.YoutubeDL(tmp_opts) as tmp_ydl:
+            prepared = Path(tmp_ydl.prepare_filename(info))
+    except Exception:
+        return []
+
+    candidates: list[Path] = []
+    if is_audio:
+        pretty_stem = build_preferred_audio_stem(info)
+        if pretty_stem:
+            candidates.append(prepared.with_name(pretty_stem + ".mp3"))
+        candidates.extend(
+            [
+                prepared.with_suffix(".mp3"),
+                prepared,
+                prepared.with_suffix(".m4a"),
+                prepared.with_suffix(".opus"),
+                prepared.with_suffix(".ogg"),
+                prepared.with_suffix(".flac"),
+                prepared.with_suffix(".wav"),
+            ]
+        )
+    else:
+        if looks_like_media(info):
+            candidates.extend(
+                [
+                    prepared.with_suffix(".mp4"),
+                    prepared,
+                    prepared.with_suffix(".mkv"),
+                    prepared.with_suffix(".webm"),
+                    prepared.with_suffix(".mov"),
+                    prepared.with_suffix(".avi"),
+                ]
+            )
+        else:
+            candidates.append(prepared)
+
+    out: list[Path] = []
+    seen: set[str] = set()
+    for p in candidates:
+        full = Path(os.path.abspath(str(p)))
+        key = normalize_compare_path(str(full))
+        if key not in seen:
+            seen.add(key)
+            out.append(full)
+    return out
+
+
+def print_single_summary(
+    ui: dict,
+    *,
+    title: str,
+    output_file: str,
+    is_audio: bool,
+    quality_label: str,
+    duration_seconds: float | int | None,
+    total_elapsed: float,
+    status_text: str | None = None,
+) -> None:
+    final_size_mb = (os.path.getsize(output_file) / (1024 * 1024)) if output_file and os.path.exists(output_file) else 0.0
+    avg_speed = (final_size_mb / total_elapsed) if total_elapsed > 0 else 0.0
+    mode_label = build_mode_label(output_file, is_audio)
+
+    print()
+    print(f"{paint(ui, 'accent', 'Title:')}    {paint(ui, 'text', title or 'Unknown')}")
+    print(f"{paint(ui, 'accent', 'Mode:')}     {paint(ui, 'text', mode_label)}")
+    print(f"{paint(ui, 'accent', 'Quality:')}  {paint(ui, 'text', quality_label)}")
+    print(f"{paint(ui, 'accent', 'Length:')}   {paint(ui, 'text', human_time(duration_seconds))}")
+    print(f"{paint(ui, 'accent', 'Size:')}     {paint(ui, 'text', f'{final_size_mb:.1f} MB')}")
+    if status_text:
+        print(f"{paint(ui, 'accent', 'Status:')}   {paint(ui, 'text', status_text)}")
+    print()
+
+    stats = f"{paint(ui, 'accent', ui['icons']['time'] + ' Time taken:')} {paint(ui, 'text', human_time(total_elapsed))}"
+    if total_elapsed > 0:
+        stats += f" | {paint(ui, 'accent', 'Avg:')} {paint(ui, 'text', f'{avg_speed:.2f} MB/s')}"
+    print(stats)
+
+    if output_file:
+        print(paint(ui, "success", f"{ui['icons']['success']} Saved file: {paint(ui, 'text', output_file)}\n"))
+    else:
+        print(paint(ui, "warning", f"{ui['icons']['warning']} Download finished, but output path could not be resolved.\n"))
+
+
 def read_key() -> str | None:
     if os.name == "nt":
-        import msvcrt  # stdlib on Windows
+        import msvcrt
 
         ch = msvcrt.getch()
         if ch in (b"\x03", b"\x04"):
@@ -477,40 +864,36 @@ def read_key() -> str | None:
         if ch in (b"\r", b"\n"):
             return "enter"
         return ch.decode("utf-8", "ignore")
-    else:
-        import termios, tty  # stdlib
 
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            ch = sys.stdin.read(1)
-            if ch == "\x03":
-                raise KeyboardInterrupt
-            if ch == "\x1b":
-                ch2 = sys.stdin.read(1)
-                if ch2 == "[":
-                    ch3 = sys.stdin.read(1)
-                    if ch3 == "A":
-                        return "up"
-                    if ch3 == "B":
-                        return "down"
-            if ch in ("\r", "\n"):
-                return "enter"
-            return ch
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        if ch == "\x03":
+            raise KeyboardInterrupt
+        if ch == "\x1b":
+            ch2 = sys.stdin.read(1)
+            if ch2 == "[":
+                ch3 = sys.stdin.read(1)
+                if ch3 == "A":
+                    return "up"
+                if ch3 == "B":
+                    return "down"
+        if ch in ("\r", "\n"):
+            return "enter"
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def menu_select(ui: dict, items: list[tuple[str, str]], header: str) -> str:
-    """
-    items: list of (label, payload)
-    returns payload
-    """
     if not items:
         raise ValueError("No menu items")
 
-    # If we can't reliably redraw, use numeric prompt
     if not ui.get("ansi", False) or not sys.stdin.isatty():
         print()
         print(paint(ui, "accent", header))
@@ -528,7 +911,6 @@ def menu_select(ui: dict, items: list[tuple[str, str]], header: str) -> str:
                     return items[idx][1]
             print(paint(ui, "warning", "Invalid choice. Try again."))
 
-    # Arrow-key menu
     idx = 0
     n = len(items)
 
@@ -553,7 +935,6 @@ def menu_select(ui: dict, items: list[tuple[str, str]], header: str) -> str:
             print()
             raise
 
-        # Move cursor up and clear lines
         for _ in range(n):
             sys.stdout.write(CURSOR_PREV_LINE + CLEAR_LINE)
 
@@ -569,11 +950,8 @@ def menu_select(ui: dict, items: list[tuple[str, str]], header: str) -> str:
         draw()
 
 
-# ------------------------------------------------------------
-# yt-dlp logger
-# ------------------------------------------------------------
 class SilentLogger:
-    def debug(self, *a, **k):  # noqa: D401
+    def debug(self, *a, **k):
         pass
 
     def info(self, *a, **k):
@@ -586,20 +964,23 @@ class SilentLogger:
         print(*a, **k)
 
 
-# ------------------------------------------------------------
-# Internet check
-# ------------------------------------------------------------
-def check_internet() -> bool:
-    try:
-        socket.create_connection(("youtube.com", 443), timeout=3)
-        return True
-    except Exception:
-        return False
+def check_internet(host: str = "youtube.com") -> bool:
+    targets: list[str] = []
+    host = (host or "").strip()
+    if host:
+        targets.append(host)
+    if "youtube.com" not in targets:
+        targets.append("youtube.com")
+
+    for target in targets:
+        try:
+            socket.create_connection((target, 443), timeout=3)
+            return True
+        except Exception:
+            continue
+    return False
 
 
-# ------------------------------------------------------------
-# Service/domain detection + warnings
-# ------------------------------------------------------------
 _YT_HOSTS = {
     "youtube.com",
     "www.youtube.com",
@@ -614,11 +995,9 @@ def _netloc(url: str) -> str:
         parts = urllib.parse.urlparse(url)
         host = parts.netloc
         if not host and parts.path and "://" not in url:
-            # handle url without scheme: youtube.com/watch?v=...
             parts = urllib.parse.urlparse("https://" + url)
             host = parts.netloc
         host = (host or "").lower()
-        # strip port
         if ":" in host:
             host = host.split(":", 1)[0]
         return host
@@ -627,9 +1006,6 @@ def _netloc(url: str) -> str:
 
 
 def detect_service_label(original_url: str) -> tuple[str, str, bool]:
-    """
-    Returns (label, host, is_youtube_family)
-    """
     host = _netloc(original_url)
     if host == "music.youtube.com":
         return ("YouTube Music", host, True)
@@ -641,46 +1017,24 @@ def detect_service_label(original_url: str) -> tuple[str, str, bool]:
 
 
 def looks_like_media(info: dict) -> bool:
-    # playlists are media collections
     if str(info.get("_type") or "").lower() in {"playlist", "multi_video"}:
         return True
 
-    # having formats is a strong indicator (streams)
     fmts = info.get("formats")
     if isinstance(fmts, list) and fmts:
         return True
 
-    # duration is a strong indicator
     if info.get("duration"):
         return True
 
     ext = str(info.get("ext") or "").lower()
-    if ext in {
-        "mp4",
-        "mkv",
-        "webm",
-        "mov",
-        "flv",
-        "avi",
-        "mp3",
-        "m4a",
-        "opus",
-        "ogg",
-        "aac",
-        "flac",
-        "wav",
-        "m4v",
-    }:
+    if ext in AUDIO_EXTS or ext in VIDEO_EXTS:
         return True
 
     return False
 
 
-# ------------------------------------------------------------
-# Quality presets (keys match config)
-# ------------------------------------------------------------
 VIDEO_PRESETS: list[dict] = [
-    # Low → high (for menus)
     {
         "key": "144p",
         "label": "144p",
@@ -767,7 +1121,6 @@ def normalize_quality_key(s: str) -> str:
     s = (s or "").strip().lower()
     s = s.replace(" ", "")
     s = s.replace("fps", "")
-    # accept "1080p" -> "1080p30" default-ish
     if s in {"720p", "720"}:
         return "720p30"
     if s in {"1080p", "1080"}:
@@ -782,7 +1135,6 @@ def normalize_quality_key(s: str) -> str:
 
 
 def video_preset_available(preset: dict, formats: list[dict]) -> bool:
-    # If we don't have formats (playlist probe often), don't hide everything.
     if not formats:
         return True
     if preset.get("key") == "best":
@@ -795,6 +1147,7 @@ def video_preset_available(preset: dict, formats: list[dict]) -> bool:
         vcodec = f.get("vcodec")
         if not vcodec or vcodec == "none":
             continue
+
         h = f.get("height") or 0
         fps = f.get("fps") or 0
         if not h:
@@ -821,9 +1174,6 @@ def video_preset_available(preset: dict, formats: list[dict]) -> bool:
     return False
 
 
-# ------------------------------------------------------------
-# Updater
-# ------------------------------------------------------------
 def self_update(ui: dict, script_path: Path, url: str) -> int:
     print(paint(ui, "accent", "Updating yt-nerddl…"))
     try:
@@ -843,13 +1193,11 @@ def self_update(ui: dict, script_path: Path, url: str) -> int:
         try:
             os.replace(tmp, script_path)
         except Exception as e:
-            # Fallback: leave tmp file and tell the user
             print(paint(ui, "warning", f"Auto-replace failed: {e}"))
             print(paint(ui, "warning", f"New file saved to: {str(tmp)}"))
             print(paint(ui, "text", f"Manually replace: {str(script_path)}"))
             return 1
 
-        # try to keep executable bit on Unix
         if os.name != "nt":
             try:
                 mode = script_path.stat().st_mode
@@ -865,24 +1213,57 @@ def self_update(ui: dict, script_path: Path, url: str) -> int:
         return 1
 
 
-# ------------------------------------------------------------
-# Arg parsing
-# ------------------------------------------------------------
+class SmartHelpFormatter(argparse.RawTextHelpFormatter):
+    pass
+
+
 def build_parser() -> argparse.ArgumentParser:
+    epilog = f"""\
+Tested only on:
+  • YouTube
+  • YouTube Music
+
+Config path defaults:
+  Linux/macOS: ~/.config/yt-nerddl/config.toml
+  Windows:     %APPDATA%\\yt-nerddl\\config.toml
+
+Notes:
+  • Other URLs are passed through yt-dlp and may download arbitrary hosted files.
+  • If downloads.output_directory is still the default, non-YouTube URLs fall back to ~/Videos.
+  • ffmpeg is strongly recommended (and required for many merges/conversions).
+
+Mature / private / age-restricted guide:
+  {MATURE_CONTENT_URL}
+
+Examples:
+  yt-nerddl -q https://www.youtube.com/watch?v=xxxx
+  yt-nerddl --no-playlist https://www.youtube.com/watch?v=xxxx&list=yyyy
+  yt-nerddl -a -c firefox https://music.youtube.com/watch?v=xxxx
+  yt-nerddl --debug -y https://youtu.be/xxxx
+"""
+
     parser = argparse.ArgumentParser(
         prog="yt-nerddl",
-        description="yt-dlp wrapper — clean UX, interactive selector, config + themes",
+        description="yt-dlp wrapper — clean UX, interactive selector, config + themes.\nTested only on YouTube and YouTube Music.",
+        formatter_class=SmartHelpFormatter,
+        epilog=epilog,
     )
 
-    parser.add_argument("url", nargs="?", help="URL (tested: YouTube video/playlist; may work elsewhere via yt-dlp)")
+    parser.add_argument("url", nargs="?", help="URL to download")
 
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("-a", "--audio", action="store_true", help="Audio only (MP3)")
+    mode.add_argument("-a", "--audio", action="store_true", help="Download audio only (converted to MP3)")
     mode.add_argument("--video", action="store_true", help="Force video mode")
 
-    parser.add_argument("-q", "--quality", action="store_true", help="Interactive quality selector")
-    parser.add_argument("-H", "--high", action="store_true", help="Download highest available quality")
-    parser.add_argument("-o", "--output", help="Output directory (overrides config)")
+    parser.add_argument("-q", "--quality", action="store_true", help="Interactive quality / bitrate selector")
+    parser.add_argument("-H", "--high", action="store_true", help="Download highest available video quality")
+    parser.add_argument("--no-playlist", action="store_true", help="If given a playlist URL, download only the current video")
+
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Output directory override (if left at default, non-YouTube URLs fall back to ~/Videos)",
+    )
 
     cookies_help = (
         "Use browser cookies (for age-restricted / logged-in content)\n"
@@ -891,8 +1272,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-c", "--cookies", metavar="BROWSER", help=cookies_help)
     parser.add_argument("--no-cookies", action="store_true", help="Disable cookies even if enabled in config")
 
-    parser.add_argument("-y", "--yes", action="store_true", help="Assume 'yes' / skip prompts (use defaults/config)")
-    parser.add_argument("--debug", action="store_true", help="Debug mode (domain, selected format, yt-dlp options)")
+    parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip prompts/menus and use defaults/config; existing files are kept by default",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print detected service, extractor, selected format selector, and a readable yt-dlp option dump",
+    )
 
     parser.add_argument("--theme", metavar="NAME", help="Theme override for this run")
     parser.add_argument("--theme-preview", action="store_true", help="List installed themes + preview")
@@ -900,7 +1290,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-colors", action="store_true", help="Disable ANSI colors for this run")
 
     parser.add_argument("--config", metavar="PATH", help="Use a custom config.toml path")
-    parser.add_argument("--init-config", action="store_true", help="Create config + themes (if missing) and exit")
+    parser.add_argument("--init-config", action="store_true", help="Create config + bundled themes and exit")
 
     parser.add_argument("-U", "--update", action="store_true", help="Self-update from GitHub (same as --upgrade)")
     parser.add_argument("--upgrade", action="store_true", help="Self-update from GitHub (same as --update)")
@@ -910,9 +1300,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# ------------------------------------------------------------
-# Theme preview
-# ------------------------------------------------------------
 def theme_preview(ui: dict, config_dir: Path) -> int:
     files = find_theme_files(config_dir)
     names = sorted(files.keys())
@@ -928,7 +1315,6 @@ def theme_preview(ui: dict, config_dir: Path) -> int:
             print(f"  - {n}")
         return 0
 
-    # Show a tiny preview
     for name in names:
         data = load_toml_file(files[name])
         preview_ui = build_ui(data, {"colors": True, "icons": True, "progress_bar_width": 20})
@@ -947,9 +1333,6 @@ def theme_preview(ui: dict, config_dir: Path) -> int:
     return 0
 
 
-# ------------------------------------------------------------
-# Debug helpers
-# ------------------------------------------------------------
 def _safe_pformat(obj: object) -> str:
     return pprint.pformat(obj, width=110, sort_dicts=True, compact=False)
 
@@ -959,15 +1342,12 @@ def redact_ytdl_opts(opts: dict) -> dict:
     if "logger" in safe:
         safe["logger"] = "<SilentLogger>"
     if "progress_hooks" in safe and isinstance(safe["progress_hooks"], list):
-        safe["progress_hooks"] = [f"<progress_hook #{i+1}>" for i in range(len(safe["progress_hooks"]))]
+        safe["progress_hooks"] = [f"<progress_hook #{i + 1}>" for i in range(len(safe["progress_hooks"]))]
     if "postprocessor_hooks" in safe and isinstance(safe["postprocessor_hooks"], list):
-        safe["postprocessor_hooks"] = [f"<postprocessor_hook #{i+1}>" for i in range(len(safe["postprocessor_hooks"]))]
+        safe["postprocessor_hooks"] = [f"<postprocessor_hook #{i + 1}>" for i in range(len(safe["postprocessor_hooks"]))]
     return safe
 
 
-# ------------------------------------------------------------
-# Main
-# ------------------------------------------------------------
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -976,7 +1356,6 @@ def main() -> int:
         print(f"{APP_NAME} version {VERSION}")
         return 0
 
-    # Config path selection
     if args.config:
         config_path = Path(expand_path(args.config))
         config_dir = config_path.parent
@@ -986,10 +1365,8 @@ def main() -> int:
 
     created = init_config_and_themes(config_path)
 
-    # Load config + merge defaults
-    cfg = deep_merge(dict(DEFAULTS), load_toml_file(config_path))
+    cfg = deep_merge(copy.deepcopy(DEFAULTS), load_toml_file(config_path))
 
-    # Apply CLI overrides that affect config-derived behavior
     if args.output:
         cfg["downloads"]["output_directory"] = args.output
 
@@ -1008,19 +1385,16 @@ def main() -> int:
     if args.no_colors:
         cfg["ui"]["colors"] = False
 
-    # Build UI from theme
     theme_name = str(cfg.get("ui", {}).get("theme", "default"))
     theme_data = load_theme_data(theme_name, config_dir)
     ui = build_ui(theme_data, cfg.get("ui", {}))
 
-    # Optional init-only
     if args.init_config:
         print(paint(ui, "accent", "Config initialized."))
         print(paint(ui, "text", f"Config:  {str(config_path)}"))
         print(paint(ui, "text", f"Themes:  {str(config_dir / 'themes')}"))
         return 0
 
-    # Print a tiny one-time note if we created stuff (keep it minimal)
     if (created.get("config") or created.get("themes")) and sys.stdout.isatty():
         msg = []
         if created.get("config"):
@@ -1030,24 +1404,19 @@ def main() -> int:
         print(paint(ui, "dim", f"[init] {', '.join(msg)} in {str(config_dir)}"))
         print()
 
-    # Theme preview
     if args.theme_preview:
         return theme_preview(ui, config_dir)
 
-    # Self-update
     if args.update or args.upgrade:
         script_path = Path(__file__).resolve()
         return self_update(ui, script_path, UPDATE_URL)
 
-    # URL (interactive prompt only for URL itself)
     url = args.url
     if not url:
         banner = f"[{ui['icons']['youtube']} {APP_NAME}]"
         print(paint(ui, "accent", banner) + " " + paint(ui, "text", "Interactive URL prompt"))
         try:
-            url = input(
-                paint(ui, "warning", "Enter URL: ") if ui["colors_enabled"] else "Enter URL: "
-            ).strip()
+            url = input(paint(ui, "warning", "Enter URL: ") if ui["colors_enabled"] else "Enter URL: ").strip()
         except KeyboardInterrupt:
             print()
             print(paint(ui, "error", f"{ui['icons']['warning']} Interrupted. Exiting."))
@@ -1056,20 +1425,19 @@ def main() -> int:
             print(paint(ui, "warning", f"{ui['icons']['warning']} No URL provided. Exiting."))
             return 0
 
-    # Keep original URL for service detection banner (before normalization)
+    original_url = url
+    is_youtube_music_source = "music.youtube.com" in (url or "").lower()
     service_label, service_host, is_youtube_family = detect_service_label(url)
 
-    # Normalize YouTube Music URLs to standard YouTube (yt-dlp handles both, but this keeps behavior consistent)
     if "music.youtube.com" in url:
         url = url.replace("music.youtube.com", "www.youtube.com")
 
-    # Internet check (config-controlled)
     if bool(cfg.get("behavior", {}).get("check_internet", True)):
-        if not check_internet():
-            print(paint(ui, "error", f"{ui['icons']['warning']} Offline or cannot reach YouTube. Exiting."))
+        if not check_internet(service_host or "youtube.com"):
+            host_label = service_label if service_label != "this site" else (service_host or "internet")
+            print(paint(ui, "error", f"{ui['icons']['warning']} Offline or cannot reach {host_label}. Exiting."))
             return 1
 
-    # Determine mode
     mode_cfg = str(cfg.get("downloads", {}).get("mode", "video")).strip().lower()
     if args.audio:
         mode_cfg = "audio"
@@ -1078,24 +1446,24 @@ def main() -> int:
     if mode_cfg not in {"audio", "video"}:
         mode_cfg = "video"
 
-    # Assume-yes (config + CLI)
     assume_yes = bool(cfg.get("behavior", {}).get("assume_yes", False)) or bool(args.yes)
 
-    # Decide playlist behavior (ask/video/playlist) if playlist detected
     playlist_mode = str(cfg.get("behavior", {}).get("playlist", "ask")).strip().lower()
     if playlist_mode not in {"ask", "video", "playlist"}:
         playlist_mode = "ask"
 
+    force_no_playlist = bool(args.no_playlist)
     download_playlist = False
     is_playlist_url = ("list=" in url) or ("/playlist" in url)
 
     if is_playlist_url:
-        if playlist_mode == "playlist":
+        if force_no_playlist:
+            download_playlist = False
+        elif playlist_mode == "playlist":
             download_playlist = True
         elif playlist_mode == "video":
             download_playlist = False
         else:
-            # ask (unless --yes)
             if assume_yes:
                 download_playlist = False
                 print(paint(ui, "dim", "[yes] Playlist detected; skipping prompt → single video"))
@@ -1112,16 +1480,18 @@ def main() -> int:
                 except KeyboardInterrupt:
                     print(paint(ui, "error", f"{ui['icons']['warning']} Interrupted. Exiting."))
                     return 1
-                download_playlist = (choice == "playlist")
+                download_playlist = choice == "playlist"
 
-        # If single-video chosen, strip playlist param (if we can)
         if not download_playlist:
             parts = urllib.parse.urlparse(url)
             q = urllib.parse.parse_qs(parts.query)
             if "v" in q and q["v"]:
                 url = f"https://www.youtube.com/watch?v={q['v'][0]}"
             else:
-                # playlist-only URL without v=
+                if force_no_playlist:
+                    print(paint(ui, "error", f"{ui['icons']['warning']} --no-playlist was given, but this URL has no ?v= video id."))
+                    print(paint(ui, "text", "Use a watch URL with ?v=... or remove --no-playlist."))
+                    return 1
                 if assume_yes:
                     download_playlist = True
                     print(paint(ui, "dim", "[yes] Playlist URL without v=; forcing playlist download"))
@@ -1130,21 +1500,21 @@ def main() -> int:
                     print(paint(ui, "text", "Provide a watch URL (with ?v=) or set playlist=\"playlist\" in config."))
                     return 1
 
-    # Output directory
-    target_dir = expand_path(str(cfg.get("downloads", {}).get("output_directory", "~/Videos/Youtube")))
+    raw_output_dir = str(cfg.get("downloads", {}).get("output_directory", DEFAULT_YOUTUBE_OUTPUT_DIR))
+    target_dir, used_service_default = choose_output_directory(raw_output_dir, is_youtube_family, bool(args.output))
     os.makedirs(target_dir, exist_ok=True)
 
-    # Cookies
+    if used_service_default:
+        print(paint(ui, "dim", f"[site] Non-YouTube URL + default output dir → {target_dir}"))
+
     cookies_enabled = bool(cfg.get("cookies", {}).get("enabled", False))
     cookies_browser = str(cfg.get("cookies", {}).get("browser", "firefox")).strip()
 
-    # Probe info (to build filtered menus for single videos; playlists may not include formats)
     probe_opts = {
         "quiet": True,
         "no_warnings": True,
         "logger": SilentLogger(),
         "noplaylist": not download_playlist,
-        # "android" client often behaves better for some metadata / streams
         "extractor_args": {"youtube": {"client": ["android"]}},
     }
     if cookies_enabled:
@@ -1162,13 +1532,12 @@ def main() -> int:
         print(paint(ui, "error", f"{ui['icons']['warning']} Failed to fetch info: {e}"))
         return 1
 
-    # Post-probe: better service/extractor warnings
     extractor_key = str(info.get("extractor_key") or info.get("extractor") or "").strip()
     if not is_youtube_family:
         print(paint(ui, "warning", f"{ui['icons']['warning']} Non-YouTube URL detected ({service_host or service_label})."))
         print(paint(ui, "dim", "yt-nerddl is only tested on YouTube + YouTube Music. Other sites are at your own risk.\n"))
 
-    if (extractor_key.lower() == "generic") or (not looks_like_media(info)):
+    if extractor_key.lower() == "generic" or not looks_like_media(info):
         print(paint(ui, "warning", f"{ui['icons']['warning']} This URL may not be a media page."))
         print(paint(ui, "dim", "yt-dlp can download arbitrary hosted files; double-check what you’re fetching.\n"))
 
@@ -1177,19 +1546,16 @@ def main() -> int:
     interactive = bool(cfg.get("behavior", {}).get("interactive", False))
     want_menu = (bool(args.quality) or interactive) and (not assume_yes)
 
-    # Select format
     selected_quality_label = "auto"
     ytdl_format = None
     postprocessors = None
 
     if mode_cfg == "audio":
-        # audio bitrate: config or interactive
         audio_bitrate_cfg = cfg.get("downloads", {}).get("audio_bitrate", 320)
-        # normalize config
         if isinstance(audio_bitrate_cfg, str):
             audio_bitrate_cfg = audio_bitrate_cfg.strip().lower()
-        chosen = None
 
+        chosen = None
         audio_items = [
             ("320kbps", "320"),
             ("256kbps", "256"),
@@ -1205,7 +1571,6 @@ def main() -> int:
                 print(paint(ui, "error", f"{ui['icons']['warning']} Interrupted. Exiting."))
                 return 1
         else:
-            # config-driven
             if audio_bitrate_cfg in {"best"}:
                 chosen = "best"
             else:
@@ -1223,20 +1588,18 @@ def main() -> int:
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
                 "preferredquality": prefq,
-            }
+            },
+            {"key": "FFmpegMetadata"},
+            {"key": "EmbedThumbnail"},
         ]
 
     else:
-        # video quality: config or interactive/high
         if args.high:
             ytdl_format = "bestvideo+bestaudio/best"
             selected_quality_label = "Best available"
         else:
             quality_cfg = normalize_quality_key(str(cfg.get("downloads", {}).get("quality", "1080p30")))
-            # Build filtered list when possible
             available = [p for p in VIDEO_PRESETS if video_preset_available(p, formats)]
-
-            # Always keep "best" at the bottom
             if not any(p["key"] == "best" for p in available):
                 available.append(VIDEO_PRESET_BY_KEY["best"])
 
@@ -1248,38 +1611,23 @@ def main() -> int:
                     print(paint(ui, "error", f"{ui['icons']['warning']} Interrupted. Exiting."))
                     return 1
             else:
-                # Try config choice if present in available; else fallback to best
                 if any(p["key"] == quality_cfg for p in available):
                     chosen_key = quality_cfg
                 else:
-                    # fallback: try a sensible fallback chain before "best"
-                    fallback_order = [
-                        quality_cfg,
-                        "1080p30",
-                        "720p30",
-                        "480p",
-                        "360p",
-                        "best",
-                    ]
+                    fallback_order = [quality_cfg, "1080p30", "720p30", "480p", "360p", "best"]
                     chosen_key = next((k for k in fallback_order if any(p["key"] == k for p in available)), "best")
 
             preset = VIDEO_PRESET_BY_KEY.get(chosen_key, VIDEO_PRESET_BY_KEY["best"])
             ytdl_format = preset["selector"]
             selected_quality_label = preset["label"]
 
-    # Prepare yt-dlp options
-    is_audio = (mode_cfg == "audio")
+    is_audio = mode_cfg == "audio"
 
     if download_playlist:
-        outtmpl = os.path.join(
-            target_dir,
-            "%(playlist_title)s",
-            "%(playlist_index)03d - %(title)s.%(ext)s",
-        )
+        outtmpl = os.path.join(target_dir, "%(playlist_title)s", "%(playlist_index)03d - %(title)s.%(ext)s")
     else:
         outtmpl = os.path.join(target_dir, "%(title)s.%(ext)s")
 
-    # network settings
     net_cfg = cfg.get("network", {}) if isinstance(cfg.get("network"), dict) else {}
     continuedl = bool(net_cfg.get("continuedl", True))
     try:
@@ -1301,7 +1649,6 @@ def main() -> int:
         "extractor_args": {"youtube": {"client": ["android"]}},
         "progress_hooks": [],
         "postprocessor_hooks": [],
-        # bad-internet friendliness
         "continuedl": continuedl,
         "retries": max(0, retries),
         "fragment_retries": max(0, fragment_retries),
@@ -1317,11 +1664,74 @@ def main() -> int:
     if postprocessors:
         ytdl_opts["postprocessors"] = postprocessors
 
-    # ffmpeg hint (don’t hard-fail; keep it minimal)
+    if is_audio:
+        ytdl_opts["writethumbnail"] = True
+
+    existing_targets: list[Path] = []
+    overwrite_existing = False
+    skip_existing_download = False
+    skip_existing_status = ""
+
+    if not download_playlist:
+        existing_targets = [p for p in build_single_output_candidates(info, ytdl_opts, is_audio) if p.exists()]
+        if existing_targets:
+            if assume_yes:
+                skip_existing_download = True
+                skip_existing_status = "Existing file kept; --yes defaults to no overwrite."
+            else:
+                print(paint(ui, "warning", f"{ui['icons']['warning']} File already exists: {str(existing_targets[0])}"))
+                try:
+                    overwrite_existing = ask_yes_no(ui, "Overwrite it?", default=False)
+                except KeyboardInterrupt:
+                    print(paint(ui, "error", f"{ui['icons']['warning']} Interrupted. Exiting."))
+                    return 1
+
+                if not overwrite_existing:
+                    skip_existing_download = True
+                    skip_existing_status = "Existing file kept; overwrite declined."
+
+    ytdl_opts["overwrites"] = overwrite_existing
+
+    if args.debug:
+        print()
+        print(paint(ui, "dim", "[debug] Detected service: ") + paint(ui, "text", service_label))
+        if service_host:
+            print(paint(ui, "dim", "[debug] Host: ") + paint(ui, "text", service_host))
+        if extractor_key:
+            print(paint(ui, "dim", "[debug] Extractor: ") + paint(ui, "text", extractor_key))
+        print(paint(ui, "dim", "[debug] Mode: ") + paint(ui, "text", mode_cfg))
+        print(paint(ui, "dim", "[debug] Playlist download: ") + paint(ui, "text", str(download_playlist)))
+        print(paint(ui, "dim", "[debug] Selected quality: ") + paint(ui, "text", selected_quality_label))
+        print(paint(ui, "dim", "[debug] Format selector: ") + paint(ui, "text", str(ytdl_format)))
+        if existing_targets:
+            print(
+                paint(ui, "dim", "[debug] Existing output candidates:\n")
+                + paint(ui, "text", _safe_pformat([str(p) for p in existing_targets]))
+            )
+            print(paint(ui, "dim", "[debug] Overwrite chosen: ") + paint(ui, "text", str(overwrite_existing)))
+        print(paint(ui, "dim", "[debug] yt-dlp opts:\n") + paint(ui, "text", _safe_pformat(redact_ytdl_opts(ytdl_opts))))
+        print()
+
+    if skip_existing_download:
+        existing_file = str(existing_targets[0]) if existing_targets else ""
+        print(paint(ui, "accent", f"{ui['icons']['youtube']} Using existing file from {service_label}…"))
+        print_single_summary(
+            ui,
+            title=str(info.get("title") or Path(existing_file).stem or "Unknown"),
+            output_file=existing_file,
+            is_audio=is_audio,
+            quality_label=selected_quality_label,
+            duration_seconds=info.get("duration") or 0,
+            total_elapsed=0.0,
+            status_text=skip_existing_status,
+        )
+        if args.debug:
+            print(paint(ui, "dim", "[debug] Resolved output file: ") + paint(ui, "text", existing_file or "<none>"))
+        return 0
+
     if shutil.which("ffmpeg") is None:
         print(paint(ui, "dim", "[note] ffmpeg not found in PATH — merging/conversion may fail."))
 
-    # Build mapping: format_id -> "Video"/"Audio"/"Data"
     format_kind_by_id: dict[str, str] = {}
     for f in formats:
         fid = f.get("format_id")
@@ -1350,36 +1760,22 @@ def main() -> int:
             return None
         return m.group("id")
 
-    audio_exts = {"m4a", "mp3", "opus", "ogg", "aac", "flac", "wav"}
-
-    # Progress hook
     start_time = None
+    did_download_work = False
     bar_width = int(ui.get("bar_width", 25))
     fill = ui.get("fill", "▰")
     empty = ui.get("empty", "▱")
 
-    def human_time(sec: float) -> str:
-        try:
-            return str(timedelta(seconds=int(sec)))
-        except Exception:
-            return "0:00:00"
-
     def infer_stream_label(d: dict) -> str:
-        """
-        Try hard to label individual downloads as Video/Audio.
-        yt-dlp often downloads video+audio separately for "bestvideo+bestaudio".
-        """
         if is_audio:
             return "Audio"
 
-        # 1) explicit format_id (if yt-dlp provides it)
         fmt_id = d.get("format_id")
-        if not fmt_id:
-            info_dict = d.get("info_dict")
-            if isinstance(info_dict, dict):
-                fmt_id = info_dict.get("format_id")
+        info_dict = d.get("info_dict") if isinstance(d.get("info_dict"), dict) else {}
 
-        # 2) parse from filename/tmpfilename: *.f137.mp4, *.f140.m4a, ...
+        if not fmt_id and info_dict:
+            fmt_id = info_dict.get("format_id")
+
         name = str(d.get("tmpfilename") or d.get("filename") or "")
         parsed = extract_format_id_from_name(name)
         if parsed:
@@ -1390,18 +1786,20 @@ def main() -> int:
             if kind in {"Video", "Audio"}:
                 return kind
 
-        # 3) fallback by extension
-        ext = Path(name).suffix.lower().lstrip(".")
-        if ext in audio_exts:
-            return "Audio"
+        ext = str(info_dict.get("ext") or "").lower().lstrip(".")
+        if not ext:
+            ext = Path(name).suffix.lower().lstrip(".")
+            if ext == "part":
+                ext = Path(Path(name).stem).suffix.lower().lstrip(".")
 
-        # 4) safest default for video mode
-        return "Video"
+        return label_from_extension(ext, default="Video")
 
     def progress_hook(d: dict):
-        nonlocal start_time
+        nonlocal start_time, did_download_work
         status = d.get("status")
+
         if status == "downloading":
+            did_download_work = True
             if start_time is None:
                 start_time = time.time()
 
@@ -1429,27 +1827,26 @@ def main() -> int:
             sys.stdout.flush()
 
         elif status == "finished":
+            did_download_work = True
             sys.stdout.write("\n")
             sys.stdout.flush()
 
     ytdl_opts["progress_hooks"].append(progress_hook)
 
-    # Capture postprocessor output path (merge / mp3 conversion)
     final_path_from_pp: str | None = None
 
     def pp_hook(d: dict):
-        nonlocal final_path_from_pp
+        nonlocal final_path_from_pp, did_download_work
         if not isinstance(d, dict):
             return
-        status = d.get("status")
-        if status != "finished":
+        if d.get("status") != "finished":
             return
 
+        did_download_work = True
         info_dict = d.get("info_dict")
         if not isinstance(info_dict, dict):
             return
 
-        # Common places where yt-dlp stores final paths:
         for key in ("filepath", "_filename", "filename"):
             val = info_dict.get(key)
             if isinstance(val, str) and val:
@@ -1465,33 +1862,16 @@ def main() -> int:
 
     ytdl_opts["postprocessor_hooks"].append(pp_hook)
 
-    # Debug print before download (requested)
-    if args.debug:
-        print()
-        print(paint(ui, "dim", "[debug] Detected service: ") + paint(ui, "text", service_label))
-        if service_host:
-            print(paint(ui, "dim", "[debug] Host: ") + paint(ui, "text", service_host))
-        if extractor_key:
-            print(paint(ui, "dim", "[debug] Extractor: ") + paint(ui, "text", extractor_key))
-        print(paint(ui, "dim", "[debug] Mode: ") + paint(ui, "text", mode_cfg))
-        print(paint(ui, "dim", "[debug] Playlist download: ") + paint(ui, "text", str(download_playlist)))
-        print(paint(ui, "dim", "[debug] Selected quality: ") + paint(ui, "text", selected_quality_label))
-        print(paint(ui, "dim", "[debug] Format selector: ") + paint(ui, "text", str(ytdl_format)))
-        print(paint(ui, "dim", "[debug] yt-dlp opts:\n") + paint(ui, "text", _safe_pformat(redact_ytdl_opts(ytdl_opts))))
-        print()
-
-    # Run download
     try:
         print(paint(ui, "accent", f"{ui['icons']['youtube']} Fetching from {service_label}…"))
         print()
 
+        download_session_start = time.time()
+
         with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
             result = ydl.extract_info(url)
+            total_elapsed = (time.time() - start_time) if start_time else (time.time() - download_session_start)
 
-            # Final stats
-            total_elapsed = (time.time() - start_time) if start_time else 0.0
-
-            # Playlist summary
             if download_playlist:
                 title = result.get("title") or result.get("playlist_title") or "Playlist"
                 entries = result.get("entries") or []
@@ -1502,7 +1882,7 @@ def main() -> int:
 
                 print()
                 print(f"{paint(ui, 'accent', 'Title:')}    {paint(ui, 'text', title)}")
-                print(f"{paint(ui, 'accent', 'Mode:')}     {paint(ui, 'text', 'Audio (mp3)' if is_audio else 'Video (mp4)')}")
+                print(f"{paint(ui, 'accent', 'Mode:')}     {paint(ui, 'text', 'Audio (mp3)' if is_audio else 'Video')}")
                 print(f"{paint(ui, 'accent', 'Quality:')}  {paint(ui, 'text', selected_quality_label)}")
                 if count:
                     print(f"{paint(ui, 'accent', 'Items:')}    {paint(ui, 'text', str(count))}")
@@ -1512,7 +1892,6 @@ def main() -> int:
                 print(paint(ui, "success", f"{ui['icons']['success']} Done.\n"))
                 return 0
 
-            # Single video: resolve final output file path reliably
             def resolve_final_file() -> str:
                 candidates: list[str] = []
 
@@ -1537,11 +1916,10 @@ def main() -> int:
                 except Exception:
                     pass
 
-                # Expected final ext:
                 if is_audio:
-                    exts = [".mp3", ".m4a", ".opus", ".ogg", ".webm"]
+                    exts = [".mp3", ".m4a", ".opus", ".ogg", ".aac", ".flac", ".wav", ".webm"]
                 else:
-                    exts = [".mp4", ".mkv", ".webm"]
+                    exts = [".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv"]
 
                 expanded: list[str] = []
                 for c in candidates:
@@ -1557,32 +1935,39 @@ def main() -> int:
                     if p and os.path.exists(p):
                         return p
 
-                # last resort: return "best guess"
                 return expanded[0] if expanded else ""
 
             output_file = resolve_final_file()
+            title = str(result.get("title") or info.get("title") or "Unknown")
+            duration_seconds = result.get("duration") or info.get("duration") or 0
 
-            title = result.get("title", "Unknown")
-            duration = timedelta(seconds=result.get("duration") or 0)
-
-            final_size_mb = (os.path.getsize(output_file) / (1024 * 1024)) if output_file and os.path.exists(output_file) else 0.0
-            avg_speed = (final_size_mb / total_elapsed) if total_elapsed > 0 else 0.0
-
-            print()
-            print(f"{paint(ui, 'accent', 'Title:')}    {paint(ui, 'text', title)}")
-            print(f"{paint(ui, 'accent', 'Mode:')}     {paint(ui, 'text', 'Audio - mp3' if is_audio else 'Video - mp4')}")
-            print(f"{paint(ui, 'accent', 'Quality:')}  {paint(ui, 'text', selected_quality_label)}")
-            print(f"{paint(ui, 'accent', 'Length:')}   {paint(ui, 'text', str(duration))}")
-            print(f"{paint(ui, 'accent', 'Size:')}     {paint(ui, 'text', f'{final_size_mb:.1f} MB')}")
-            print()
-            print(
-                f"{paint(ui, 'accent', ui['icons']['time'] + ' Time taken:')} {paint(ui, 'text', human_time(total_elapsed))} | "
-                f"{paint(ui, 'accent', 'Avg:')} {paint(ui, 'text', f'{avg_speed:.2f} MB/s')}"
+            should_finalize_audio = bool(
+                is_audio
+                and output_file
+                and os.path.exists(output_file)
+                and (did_download_work or overwrite_existing or not existing_targets)
             )
-            if output_file:
-                print(paint(ui, "success", f"{ui['icons']['success']} Saved file: {paint(ui, 'text', output_file)}\n"))
-            else:
-                print(paint(ui, "warning", f"{ui['icons']['warning']} Download finished, but output path could not be resolved.\n"))
+
+            if should_finalize_audio:
+                output_file = maybe_finalize_audio_output(
+                    output_file,
+                    result,
+                    info,
+                    is_youtube_music_source,
+                    ui,
+                    debug=args.debug,
+                    allow_overwrite=overwrite_existing,
+                )
+
+            print_single_summary(
+                ui,
+                title=title,
+                output_file=output_file,
+                is_audio=is_audio,
+                quality_label=selected_quality_label,
+                duration_seconds=duration_seconds,
+                total_elapsed=total_elapsed,
+            )
 
             if args.debug:
                 print(paint(ui, "dim", "[debug] Resolved output file: ") + paint(ui, "text", output_file or "<none>"))
