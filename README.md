@@ -61,24 +61,24 @@ See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## Features
 
-✔ Audio & video downloads
-✔ Interactive quality selector (arrow keys + numeric fallback)
-✔ Playlist detection + `--no-playlist` override
-✔ Deno-inspired progress bar
-✔ YouTube Music URL support
-✔ Automatic MP3 conversion
-✔ YouTube Music filename / cover-art polish
-✔ Cross-platform CLI menus
-✔ Cookie extraction for age-restricted videos
-✔ Built-in auto updater
-✔ Config + themes (`config.toml`, bundled themes)
-✔ Customizable progress bar width + glyphs
-✔ Resume + retries for shaky internet
-✔ `--yes` / `--debug`
-✔ Dynamic service banner + safer non-media warnings
-✔ Existing-file overwrite prompt for single downloads
-✔ Clean minimal console output
-✔ Safe interrupt handling (`Ctrl+C`)
+✔ Audio & video downloads <br>
+✔ Interactive quality selector (arrow keys + numeric fallback) <br>
+✔ Playlist detection + `--no-playlist` override <br>
+✔ Deno-inspired progress bar <br>
+✔ YouTube Music URL support <br>
+✔ Automatic MP3 conversion <br>
+✔ YouTube Music filename / cover-art polish <br>
+✔ Cross-platform CLI menus <br>
+✔ Cookie extraction for age-restricted videos <br>
+✔ Built-in auto updater <br>
+✔ Config + themes (`config.toml`, bundled themes) <br>
+✔ Customizable progress bar width + glyphs <br>
+✔ Resume + retries for shaky internet <br>
+✔ `--yes` / `--debug` <br>
+✔ Dynamic service banner + safer non-media warnings <br>
+✔ Existing-file overwrite prompt for single downloads <br>
+✔ Clean minimal console output <br>
+✔ Safe interrupt handling (`Ctrl+C`) <br>
 
 ---
 
