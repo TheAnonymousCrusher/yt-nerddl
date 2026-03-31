@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YT-NERDDL</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #121212; color: #ffffff; margin: 0; }
+        header { text-align: center; padding: 50px; }
+        h1 { font-size: 2.5em; }
+        .features, .gallery, .config, .changelog { padding: 20px; }
+        .dark-btn { background-color: #1f1f1f; color: #fff; border: none; padding: 10px 20px; cursor: pointer; }
+        .lightbox { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.8); }
+        .lightbox img { max-width: 90%; max-height: 90%; margin: auto; display: block; }
+        .tab { cursor: pointer; padding: 10px; background: #333; }
+        .tab-content { display: none; }
+        .active { display: block; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Welcome to YT-NERDDL</h1>
+        <p>Your all-in-one tool for YouTube video analysis.</p>
+    </header>
+    <section class="features">
+        <h2>Features</h2>
+        <ul>
+            <li>Interactive UI</li>
+            <li>Dark Theme</li>
+            <li>Mobile Responsive</li>
+        </ul>
+    </section>
+    <section class="installation">
+        <h2>Installation Guide</h2>
+        <div class="tab" onclick="showTab('method1')">Method 1</div>
+        <div class="tab" onclick="showTab('method2')">Method 2</div>
+        <div id="method1" class="tab-content active">
+            <p>Installation instructions for method 1...</p>
+        </div>
+        <div id="method2" class="tab-content">
+            <p>Installation instructions for method 2...</p>
+        </div>
+    </section>
+    <section class="gallery">
+        <h2>Gallery</h2>
+        <div>
+            <img class="thumbnail" src="image1.jpg" onclick="openLightbox('image1.jpg')">
+            <img class="thumbnail" src="image2.jpg" onclick="openLightbox('image2.jpg')">
+        </div>
+        <div class="lightbox" id="lightbox">
+            <span onclick="closeLightbox()" style="color: white;">&times;</span>
+            <img id="lightbox-img">
+        </div>
+    </section>
+    <section class="config">
+        <h2>Configuration</h2>
+        <p>Details about configuration...</p>
+    </section>
+    <section class="changelog">
+        <h2>Changelog</h2>
+        <p>Version 1.0 - Initial Release</p>
+    </section>
+    <script>
+        function openLightbox(src) {
+            document.getElementById('lightbox').style.display = 'block';
+            document.getElementById('lightbox-img').src = src;
+        }
+        function closeLightbox() {
+            document.getElementById('lightbox').style.display = 'none';
+        }
+        function showTab(tabId) {
+            const tabs = document.querySelectorAll('.tab-content');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+        }
+    </script>
+</body>
+</html>
